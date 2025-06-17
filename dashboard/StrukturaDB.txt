@@ -1,0 +1,200 @@
+# STRUKTURA UPRAWNIEŃ W BAZIE DANYCH CRM CALL CENTER
+
+## ROLE UŻYTKOWNIKÓW I ICH UPRAWNIENIA
+
+### 1. PRACOWNIK (role: 'pracownik')
+**Dostęp do klientów:**
+- Może widzieć tylko klientów swoich (edited_by = user_id)
+- Może widzieć klientów ogólnych (edited_by = NULL lub edited_by = 'system')
+- Może edytować WSZYSTKICH klientów
+- Może dodawać nowych klientów (automatycznie stają się "jego")
+
+**Ograniczenia:**
+- NIE może widzieć klientów innych pracowników (tylko w widoku)
+- NIE może usuwać ŻADNYCH klientów (główne ograniczenie)
+
+### 2. MANAGER (role: 'manager')
+**Dostęp do klientów:**
+- Może widzieć klientów wszystkich pracowników
+- Może widzieć klientów ogólnych
+- Może edytować wszystkich klientów
+- Może dodawać nowych klientów
+- Może usuwać klientów
+
+**Uprawnienia dodatkowe:**
+- Dostęp do raportów zespołowych
+- Może przypisywać klientów do pracowników
+- Może zmieniać właściciela klienta (edited_by)
+
+### 3. SZEF (role: 'szef')
+**Dostęp do klientów:**
+- Identyczne uprawnienia jak MANAGER
+- Może widzieć klientów wszystkich pracowników
+- Może widzieć klientów ogólnych  
+- Może edytować wszystkich klientów
+- Może dodawać i usuwać klientów
+
+**Uprawnienia dodatkowe:**
+- Wszystkie uprawnienia managera
+- Dostęp do zaawansowanych raportów
+- Może zmieniać role użytkowników (oprócz admin)
+
+### 4. ADMIN (role: 'admin')
+**Pełny dostęp:**
+- Wszystkie uprawnienia bez ograniczeń
+- Może widzieć i edytować wszystkich klientów
+- Może zarządzać użytkownikami (dodawać, usuwać, zmieniać role)
+- Może usuwać wszystkie dane
+- Dostęp do wszystkich raportów i statystyk
+- Może zmieniać ustawienia systemu
+
+## IMPLEMENTACJA W BAZIE DANYCH
+
+### Tabela clients - modyfikacje:
+```sql
+-- Dodanie kolumny właściciela klienta
+ALTER TABLE clients ADD COLUMN owner_id UUID REFERENCES users(id);
+
+-- Indeks dla szybszego wyszukiwania
+CREATE INDEX idx_clients_owner_id ON clients(owner_id);
+CREATE INDEX idx_clients_edited_by ON clients(edited_by);
+```
+
+### Polityki RLS (Row Level Security):
+
+#### Dla tabeli clients:
+```sql
+-- Pracownik - widzi tylko swoich klientów i ogólnych
+CREATE POLICY pracownik_clients_select ON clients 
+FOR SELECT TO authenticated 
+USING (
+  auth.jwt() ->> 'role' = 'pracownik' AND 
+  (owner_id = auth.uid() OR owner_id IS NULL OR edited_by = auth.uid())
+);
+
+-- Manager/Szef - widzi wszystkich klientów
+CREATE POLICY manager_szef_clients_select ON clients 
+FOR SELECT TO authenticated 
+USING (
+  auth.jwt() ->> 'role' IN ('manager', 'szef')
+);
+
+-- Admin - widzi wszystko
+CREATE POLICY admin_clients_select ON clients 
+FOR SELECT TO authenticated 
+USING (
+  auth.jwt() ->> 'role' = 'admin'
+);
+```
+
+## LOGIKA APLIKACJI
+
+### Filtrowanie w API (clientsApi.getClients):
+```javascript
+// W zależności od roli użytkownika, dodaj odpowiednie filtry
+switch(userRole) {
+  case 'pracownik':
+    query = query.or(`owner_id.eq.${userId},owner_id.is.null,edited_by.eq.${userId}`);
+    break;
+  case 'manager':
+  case 'szef':
+    // Brak dodatkowych filtrów - widzi wszystko
+    break;
+  case 'admin':
+    // Pełny dostęp - brak filtrów
+    break;
+}
+```
+
+### Sprawdzanie uprawnień przed akcjami:
+```javascript
+// Przed edycją klienta
+const canEdit = (client, user) => {
+  switch(user.role) {
+    case 'pracownik':
+      return client.owner_id === user.id || client.edited_by === user.id;
+    case 'manager':
+    case 'szef':
+    case 'admin':
+      return true;
+    default:
+      return false;
+  }
+};
+
+// Przed usunięciem klienta
+const canDelete = (client, user) => {
+  return ['manager', 'szef', 'admin'].includes(user.role);
+};
+```
+
+## MIGRACJE BAZY DANYCH
+
+### 1. Dodanie kolumny owner_id:
+```sql
+-- Migracja: add_owner_id_to_clients
+ALTER TABLE clients ADD COLUMN owner_id UUID REFERENCES users(id);
+
+-- Ustaw właściciela na podstawie edited_by dla istniejących rekordów
+UPDATE clients 
+SET owner_id = (
+  SELECT id FROM users WHERE users.email = clients.edited_by LIMIT 1
+)
+WHERE edited_by IS NOT NULL;
+```
+
+### 2. Włączenie RLS:
+```sql
+-- Włącz RLS na tabeli clients
+ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+
+-- Dodaj polityki (jak wyżej)
+```
+
+## WALIDACJA W APLIKACJI
+
+### Frontend - ukrywanie opcji:
+- Przycisk "Usuń" tylko dla manager/szef/admin
+- Edycja klientów tylko dla właścicieli (pracownik) lub wyższych ról
+- Sekcje raportów dostępne tylko dla odpowiednich ról
+
+### Backend - walidacja requestów:
+- Sprawdź rolę przed każdą operacją CRUD
+- Waliduj czy użytkownik ma prawo do danego klienta
+- Loguj próby nieautoryzowanego dostępu
+
+## PRZYKŁADY UŻYCIA
+
+### Pracownik Jan Kowalski loguje się:
+- Widzi tylko klientów gdzie owner_id = jan_kowalski_id
+- Widzi klientów ogólnych (owner_id = NULL)
+- Może edytować tylko swoich klientów
+- NIE widzi klientów przypisanych do innych pracowników
+
+### Manager Anna Nowak loguje się:
+- Widzi wszystkich klientów
+- Może edytować wszystkich klientów
+- Może przypisywać klientów do pracowników
+- Może usuwać klientów
+- Ma dostęp do raportów zespołowych
+
+### Admin systemu:
+- Pełny dostęp do wszystkich funkcji
+- Może zarządzać użytkownikami
+- Może zmieniać ustawienia systemu
+- Może eksportować/importować dane
+
+## BEZPIECZEŃSTWO
+
+### Zabezpieczenia:
+1. RLS na poziomie bazy danych jako pierwsza linia obrony
+2. Walidacja uprawnień w API jako druga linia obrony  
+3. Ukrywanie UI elementów jako trzecia linia obrony
+4. Logowanie wszystkich operacji w activity_logs
+5. Regular audit uprawnień i dostępów
+
+### Monitoring:
+- Loguj wszystkie operacje CRUD z informacją o użytkowniku
+- Alertuj przy próbach nieautoryzowanego dostępu
+- Regularne przeglądy logów dostępu
+- Automatyczne wylogowanie po nieaktywności 
