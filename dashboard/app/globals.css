@@ -143,3 +143,15 @@ body {
 .scroll-fade-bottom[data-scrollable="true"]::after {
   opacity: 1;
 }
+
+/* Skalowanie dla laptopów 14-15 cali */
+@media screen and (min-width: 1200px) and (max-width: 1600px) {
+  body {
+    zoom: 75%;
+    /* Alternatywnie możesz użyć transform, jeśli zoom nie działa w twojej przeglądarce:
+    transform: scale(0.75);
+    transform-origin: top left;
+    width: calc(100% / 0.75);
+    height: calc(100% / 0.75); */
+  }
+}

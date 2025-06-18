@@ -5,6 +5,34 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOi
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
+// Funkcja pomocnicza do generowania poprawnych URL-i avatarów z Supabase Storage
+export const getAvatarUrl = (avatarUrl?: string | null): string | null => {
+  if (!avatarUrl) return null
+  
+  // Jeśli to już pełny URL (zaczyna się od http), zwróć bez zmian
+  if (avatarUrl.startsWith('http')) {
+    return avatarUrl
+  }
+  
+  // Jeśli to ścieżka w bucket'u (zawiera folder), wygeneruj publiczny URL
+  if (avatarUrl.includes('/')) {
+    try {
+      const { data } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(avatarUrl)
+      
+      return data.publicUrl
+    } catch (error) {
+      console.error('Błąd generowania URL avatara:', error)
+      return null
+    }
+  }
+  
+  // Fallback - prawdopodobnie niepoprawny format
+  console.warn('Nierozpoznany format avatar_url:', avatarUrl)
+  return null
+}
+
 // Typy dla bazy danych zgodnie z ETAPEM 5 i 6 z README + StrukturaDB.txt
 export interface Client {
   id: string
@@ -22,6 +50,7 @@ export interface Client {
   owner_id?: string // Dodane dla systemu uprawnień
   created_at: string
   updated_at: string
+  status_changed_at?: string // Czas ostatniej zmiany statusu
   owner?: {
     id: string
     full_name: string
@@ -46,10 +75,10 @@ export interface User {
   email: string
   full_name: string
   role: 'admin' | 'manager' | 'pracownik' | 'szef'
-  phone?: string // Dodane pole telefonu
-  bio?: string // Dodane pole biografii
-  avatar_url?: string // Dodane pole URL avatara
-  language?: 'pl' | 'en' | 'sk' // Dodane pole języka: Polski, Angielski, Słowacki
+  phone?: string 
+  bio?: string 
+  avatar_url?: string 
+  language?: 'pl' | 'en' | 'sk' 
   created_at: string
   updated_at: string
 }
@@ -145,14 +174,20 @@ export const clientsApi = {
     try {
       console.log('🔄 Rozpoczynam pobieranie klientów dla użytkownika:', user.id, user.role)
       
-      // Najpierw spróbuj podstawowe zapytanie - WSZYSCY WIDZĄ WSZYSTKICH KLIENTÓW
+      // Użyj JOIN aby pobrać klientów z danymi właścicieli w jednym zapytaniu
       let query = supabase
         .from('clients')
-        .select('*')
+        .select(`
+          *,
+          owner:users!owner_id (
+            id,
+            full_name,
+            email,
+            avatar_url,
+            role
+          )
+        `)
         .order('updated_at', { ascending: false })
-
-      // USUNIĘTO FILTROWANIE ROLOWE - wszyscy widzą wszystkich klientów
-      // Filtry uprawnień będą działać tylko w interfejsie użytkownika przy filtrach
 
       // Dodatkowe filtry
       if (filters?.date) {
@@ -167,7 +202,7 @@ export const clientsApi = {
         query = query.eq('edited_by', filters.employee)
       }
 
-      console.log('🔄 Wykonuję zapytanie podstawowe...')
+      console.log('🔄 Wykonuję zapytanie z JOIN...')
       const { data: clients, error } = await query
       
       if (error) {
@@ -175,45 +210,30 @@ export const clientsApi = {
         throw error
       }
       
-      console.log('✅ Pobrano klientów:', clients?.length || 0)
+      console.log('✅ Pobrano klientów z JOIN:', clients?.length || 0)
       
       if (!clients || clients.length === 0) {
         console.log('ℹ️ Brak klientów w bazie danych')
         return []
       }
       
-      // Teraz pobierz informacje o właścicielach osobno
-      const ownerIds = [...new Set(clients.map(client => client.owner_id).filter(Boolean))]
-      console.log('🔄 Pobieranie właścicieli:', ownerIds.length, 'unikalnych ID')
+      // DEBUG: Sprawdź dane właścicieli
+      const clientsWithOwners = clients.filter(client => client.owner)
+      const clientsWithoutOwners = clients.filter(client => !client.owner)
+      console.log('✅ Klienci z właścicielami:', clientsWithOwners.length)
+      console.log('❌ Klienci bez właścicieli:', clientsWithoutOwners.length)
       
-      let ownersMap: Record<string, any> = {}
-      
-      if (ownerIds.length > 0) {
-        const { data: owners, error: ownersError } = await supabase
-          .from('users')
-          .select('id, full_name, email, avatar_url')
-          .in('id', ownerIds)
-        
-        if (ownersError) {
-          console.error('⚠️ Błąd pobierania właścicieli:', ownersError)
-          // Kontynuuj bez danych właścicieli
-        } else {
-          console.log('✅ Pobrano właścicieli:', owners?.length || 0)
-          ownersMap = (owners || []).reduce((acc, owner) => {
-            acc[owner.id] = owner
-            return acc
-          }, {} as Record<string, any>)
-        }
+      if (clientsWithOwners.length > 0) {
+        console.log('👤 Przykład klienta z właścicielem:', {
+          client: `${clientsWithOwners[0].first_name} ${clientsWithOwners[0].last_name}`,
+          owner_id: clientsWithOwners[0].owner_id,
+          owner_name: clientsWithOwners[0].owner?.full_name,
+          owner_email: clientsWithOwners[0].owner?.email
+        })
       }
       
-      // Połącz dane klientów z danymi właścicieli
-      const result = clients.map(client => ({
-        ...client,
-        owner: client.owner_id ? ownersMap[client.owner_id] || null : null
-      }))
-      
-      console.log('✅ Zwracam', result.length, 'klientów z informacjami o właścicielach')
-      return result as Client[]
+      console.log('✅ Zwracam', clients.length, 'klientów z informacjami o właścicielach')
+      return clients as Client[]
       
     } catch (error) {
       console.error('❌ Błąd w getClients:', error)
@@ -223,19 +243,29 @@ export const clientsApi = {
 
   // Dodaj nowego klienta z automatycznym przypisaniem właściciela
   async createClient(client: Omit<Client, 'id' | 'created_at' | 'updated_at'>, user: User) {
+    // ZABEZPIECZENIE: Upewnij się że status nie jest pusty
+    const safeStatus = client.status || 'canvas'
+    
     const clientToCreate = {
       ...client,
+      status: safeStatus, // Użyj bezpiecznego statusu
       owner_id: user.id, // Automatycznie przypisz właściciela
       edited_by: user.id
     }
 
+    console.log('📊 Tworzenie klienta z danymi:', clientToCreate)
+    
     const { data, error } = await supabase
       .from('clients')
       .insert([clientToCreate])
       .select()
       .single()
     
-    if (error) throw error
+    if (error) {
+      console.error('❌ Błąd createClient:', error)
+      throw error
+    }
+    
     return data as Client
   },
 
@@ -261,14 +291,30 @@ export const clientsApi = {
       // NOWA LOGIKA: Każda osoba która edytuje klienta zostaje jego właścicielem
       let updatedData = { ...updates }
       
+      // ZABEZPIECZENIE: Jeśli status jest w aktualizacji, upewnij się że nie jest pusty
+      if ('status' in updatedData && !updatedData.status) {
+        console.log('⚠️ UWAGA: Pusty status w aktualizacji - ustawiam domyślny "canvas"')
+        updatedData.status = 'canvas'
+      }
+      
+      // Sprawdź czy status się zmienia
+      const statusChanged = updatedData.status && updatedData.status !== currentClient.status
+      if (statusChanged) {
+        updatedData.status_changed_at = new Date().toISOString()
+        console.log(`📊 Status zmieniony z "${currentClient.status}" na "${updates.status}" - ustawiam status_changed_at`)
+        
+        // Powiadomienie o zmianie na canvas
+        if (updates.status === 'canvas') {
+          console.log('🔔 POWIADOMIENIE: Klient przeszedł na status CANVAS - start trackingu czasu!')
+        }
+      }
+      
       // Zawsze przypisz edytującego jako właściciela
       updatedData.owner_id = user.id
       console.log(`🎯 Przypisuję klienta ${id} do użytkownika ${user.id} (${user.email}) jako właściciela`)
       
       // Jeśli to pracownik i zmienia status - dodatkowy log
-      if (user.role === 'pracownik' && 
-          updates.status && 
-          updates.status !== currentClient.status) {
+      if (user.role === 'pracownik' && statusChanged) {
         console.log(`👷 Pracownik ${user.email} zmienia status z "${currentClient.status}" na "${updates.status}"`)
       }
       
@@ -338,6 +384,94 @@ export const clientsApi = {
     
     if (error) throw error
     return data as Client
+  },
+
+  // Funkcja do czyszczenia nieistniejących owner_id
+  async cleanupInvalidOwnerIds() {
+    try {
+      console.log('🧹 Rozpoczynam czyszczenie nieistniejących owner_id...')
+      
+      // Pobierz wszystkich klientów z owner_id
+      const { data: allClients, error: clientsError } = await supabase
+        .from('clients')
+        .select('id, owner_id, first_name, last_name')
+        .not('owner_id', 'is', null)
+      
+      if (clientsError) throw clientsError
+      
+      console.log('📊 Znaleziono klientów z owner_id:', allClients?.length || 0)
+      
+      if (!allClients || allClients.length === 0) {
+        return { cleaned: 0, errors: [] }
+      }
+      
+      // Pobierz wszystkie unikalne owner_id
+      const ownerIds = [...new Set(allClients.map(c => c.owner_id))]
+      console.log('🔍 Sprawdzam owner_id:', ownerIds)
+      
+      // Sprawdź które użytkownicy istnieją
+      const { data: existingUsers, error: usersError } = await supabase
+        .from('users')
+        .select('id')
+        .in('id', ownerIds)
+      
+      if (usersError) throw usersError
+      
+      const existingUserIds = (existingUsers || []).map(u => u.id)
+      console.log('✅ Istniejący użytkownicy:', existingUserIds)
+      
+      // Znajdź klientów z nieistniejącymi owner_id
+      const clientsToClean = allClients.filter(client => 
+        client.owner_id && !existingUserIds.includes(client.owner_id)
+      )
+      
+      console.log('🧹 Klienci do wyczyszczenia:', clientsToClean.length)
+      
+      if (clientsToClean.length === 0) {
+        console.log('✅ Brak klientów do wyczyszczenia')
+        return { cleaned: 0, errors: [] }
+      }
+      
+      // Wyczyść owner_id dla problematycznych klientów
+      const cleanupResults: string[] = []
+      const errors: any[] = []
+      
+      for (const client of clientsToClean) {
+        try {
+          console.log(`🧹 Czyszczę owner_id dla ${client.first_name} ${client.last_name} (${client.owner_id})`)
+          
+          const { error } = await supabase
+            .from('clients')
+            .update({ owner_id: null })
+            .eq('id', client.id)
+          
+          if (error) {
+            console.error(`❌ Błąd czyszczenia ${client.id}:`, error)
+            errors.push({ client: client.id, error: error.message })
+          } else {
+            cleanupResults.push(client.id)
+          }
+        } catch (err) {
+          console.error(`❌ Wyjątek podczas czyszczenia ${client.id}:`, err)
+          errors.push({ client: client.id, error: String(err) })
+        }
+      }
+      
+      console.log(`✅ Wyczyszczono ${cleanupResults.length} klientów`)
+      if (errors.length > 0) {
+        console.error(`❌ Błędy przy ${errors.length} klientach:`, errors)
+      }
+      
+      return { 
+        cleaned: cleanupResults.length, 
+        errors,
+        cleanedClients: clientsToClean.filter(c => cleanupResults.includes(c.id))
+      }
+      
+    } catch (error) {
+      console.error('❌ Błąd w cleanupInvalidOwnerIds:', error)
+      throw error
+    }
   },
 
   // Subskrypcja na zmiany w czasie rzeczywistym
@@ -672,5 +806,67 @@ export const authApi = {
     
     if (error) throw error
     return data as User
+  }
+}
+
+// Funkcja do określania koloru statusu "canvas" na podstawie czasu
+export const getCanvasStatusColor = (statusChangedAt?: string): { color: string, description: string, priority: 'low' | 'medium' | 'high' } => {
+  if (!statusChangedAt) {
+    return { color: 'bg-blue-500/20 text-blue-400 border-blue-500/30', description: 'Nowy', priority: 'low' }
+  }
+
+  const now = new Date()
+  const statusDate = new Date(statusChangedAt)
+  const daysDiff = Math.floor((now.getTime() - statusDate.getTime()) / (1000 * 60 * 60 * 24))
+
+  if (daysDiff <= 2) {
+    // 0-2 dni - zielony (świeży)
+    return { 
+      color: 'bg-green-500/20 text-green-400 border-green-500/30', 
+      description: `Świeży (${daysDiff}d)`,
+      priority: 'low'
+    }
+  } else if (daysDiff <= 4) {
+    // 2-4 dni - żółty (uwaga)
+    return { 
+      color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30', 
+      description: `Wymaga uwagi (${daysDiff}d)`,
+      priority: 'medium'
+    }
+  } else {
+    // 5+ dni - czerwony (pilny)
+    return { 
+      color: 'bg-red-500/20 text-red-400 border-red-500/30', 
+      description: `Pilny (${daysDiff}d)`,
+      priority: 'high'
+    }
+  }
+}
+
+// Funkcja do pobierania klientów z oznaczeniami priorytetów
+export const getCanvasClientsWithPriority = async (user: User) => {
+  try {
+    const clients = await clientsApi.getClients(user)
+    const canvasClients = clients.filter(client => client.status === 'canvas')
+    
+    const priorityStats = {
+      high: 0,
+      medium: 0,
+      low: 0,
+      total: canvasClients.length
+    }
+
+    canvasClients.forEach(client => {
+      const { priority } = getCanvasStatusColor(client.status_changed_at)
+      priorityStats[priority]++
+    })
+
+    return {
+      clients: canvasClients,
+      stats: priorityStats
+    }
+  } catch (error) {
+    console.error('Błąd pobierania klientów canvas:', error)
+    return { clients: [], stats: { high: 0, medium: 0, low: 0, total: 0 } }
   }
 } 

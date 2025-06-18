@@ -12,6 +12,7 @@ import {
   Settings,
   Users,
   User,
+  FileText,
 } from "lucide-react"
 import { authApi } from "@/lib/supabase"
 import { useAuth } from "@/store/useStore"
@@ -22,9 +23,9 @@ import { Badge } from "@/components/ui/badge"
 const navigationItems = [
   { icon: Home, label: "Dashboard", href: "/" },
   { icon: Users, label: "Klienci", href: "/clients" },
-  { icon: BarChart3, label: "Raporty", href: "/reports" },
+  { icon: BarChart3, label: "Raporty - Ogólne", href: "/reports/general" },
+  { icon: FileText, label: "Raport - Szczegóły", href: "/reports/details" },
   { icon: Calendar, label: "Kalendarz", href: "/calendar" },
-  { icon: MessageSquare, label: "Aktywność", href: "/activity" },
 ]
 
 export function Sidebar() {
