@@ -26,6 +26,13 @@ import {
   History,
   User,
   RefreshCw,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -41,7 +48,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useAuth } from "@/store/useStore"
-import { permissionsApi, activityLogsApi, clientsApi, ClientHistory } from "@/lib/supabase"
+import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUrl } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { authApi } from "@/lib/supabase"
 import { useLanguage } from "@/lib/language-context"
@@ -245,7 +252,18 @@ export function ClientsTable() {
   // Filtry
   const [searchQuery, setSearchQuery] = useState('')
   const [ownerFilter, setOwnerFilter] = useState<string>('all')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
   const [availableOwners, setAvailableOwners] = useState<any[]>([])
+  
+  // Sortowanie
+  const [sortField, setSortField] = useState<string>('updated_at')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  
+  // Paginacja
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
+  const [totalPages, setTotalPages] = useState(0)
+  const [paginatedClients, setPaginatedClients] = useState<any[]>([])
   
   // Stan dla popup detali klienta
   const [selectedClientForDetails, setSelectedClientForDetails] = useState<any>(null)
@@ -253,6 +271,8 @@ export function ClientsTable() {
   
   // Ref dla ScrollArea historii
   const historyScrollRef = useRef<HTMLDivElement>(null)
+
+
 
   // Funkcja przewijania historii do końca
   const scrollToBottom = () => {
@@ -273,26 +293,10 @@ export function ClientsTable() {
     
     setLoading(true)
     try {
-      console.log('🔄 Ładowanie klientów z bazy danych...')
-      
       // Najpierw wykonaj test połączenia
-      console.log('🔍 Test podstawowego połączenia...')
       const testResult = await clientsApi.testBasicQuery()
-      console.log('Test result:', testResult)
       
       const dbClients = await clientsApi.getClients(user)
-      console.log('📋 Pobrano klientów z bazy:', dbClients.length)
-      console.log('📋 Pierwszy klient (przykład):', dbClients[0])
-      
-      // Sprawdź czy klienci mają właścicieli
-      const clientsWithOwners = dbClients.filter(client => client.owner)
-      const clientsWithoutOwners = dbClients.filter(client => !client.owner)
-      console.log('👥 Klienci z właścicielami:', clientsWithOwners.length)
-      console.log('❌ Klienci bez właścicieli:', clientsWithoutOwners.length)
-      
-      if (clientsWithOwners.length > 0) {
-        console.log('👤 Przykład klienta z właścicielem:', clientsWithOwners[0].owner)
-      }
       
       // Dodaj właściwości UI do danych z bazy
       const clientsWithUI = dbClients.map(client => ({
@@ -312,11 +316,8 @@ export function ClientsTable() {
       // Pobierz listę dostępnych właścicieli na podstawie uprawnień
       await loadAvailableOwners(clientsWithUI)
       
-      console.log('✅ Załadowano klientów:', clientsWithUI.length)
-      
     } catch (error) {
       console.error('❌ Błąd ładowania klientów:', error)
-      console.error('❌ Szczegóły błędu:', JSON.stringify(error, null, 2))
       
       // Pokaż toast z błędem
       toast({
@@ -345,15 +346,15 @@ export function ClientsTable() {
           email: user.email,
           avatar_url: user.avatar_url
         }]
-        console.log('👤 Pracownik - opcje filtrowania ograniczone do siebie')
       } else {
-        // Manager, szef, admin mogą filtrować po wszystkich użytkownikach
+        // Manager, szef, admin mogą filtrować po wszystkich PRACOWNIKACH
         const allUsers = await authApi.getAllUsers()
-        filterOptions = allUsers
-        console.log('👔 Manager+ - opcje filtrowania: wszyscy użytkownicy z bazy', allUsers.length)
+        
+        // Filtruj tylko użytkowników o roli 'pracownik'
+        const employees = allUsers.filter(user => user.role === 'pracownik')
+        filterOptions = employees
       }
 
-      console.log('👥 Dostępne opcje filtrowania:', filterOptions.length)
       setAvailableOwners(filterOptions)
 
     } catch (error) {
@@ -393,13 +394,29 @@ export function ClientsTable() {
       }
     }
 
-    setFilteredClients(filtered)
+    // Filtr statusu
+    if (statusFilter !== 'all') {
+      filtered = filtered.filter(client => client.status === statusFilter)
+    }
+
+    // Zastosuj sortowanie
+    const sorted = sortClients(filtered)
+    setFilteredClients(sorted)
+
+    // Zastosuj paginację
+    const paginated = paginateClients(sorted)
+    setPaginatedClients(paginated)
   }
 
   // Efekt filtrowania
   useEffect(() => {
     filterClients()
-  }, [clients, searchQuery, ownerFilter])
+  }, [clients, searchQuery, ownerFilter, statusFilter, sortField, sortDirection, currentPage, pageSize])
+
+  // Efekt resetowania strony przy zmianie filtrów
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchQuery, ownerFilter, statusFilter])
 
   // Funkcja do uzyskania opcji filtra właściciela na podstawie uprawnień
   const getOwnerFilterOptions = () => {
@@ -414,7 +431,7 @@ export function ClientsTable() {
       availableOwners.forEach(owner => {
         options.push({
           value: owner.id,
-          label: owner.full_name
+          label: `${owner.full_name} (pracownik)`
         })
       })
       options.push({ value: 'no_owner', label: t('clients.noOwner') })
@@ -425,10 +442,8 @@ export function ClientsTable() {
 
   // Funkcja testowa połączenia z bazą danych
   const testDatabaseConnection = async () => {
-    console.log('🔍 Testowanie połączenia z bazą danych...')
     try {
       const result = await clientsApi.testBasicQuery()
-      console.log('Test database result:', result)
       alert(`Test bazy danych:\nSukces: ${!result.error}\nDane: ${result.data?.length || 0} rekordów\nBłąd: ${result.error ? JSON.stringify(result.error) : 'Brak'}`)
     } catch (error) {
       console.error('Test error:', error)
@@ -436,36 +451,23 @@ export function ClientsTable() {
     }
   }
 
-  // Załaduj klientów przy pierwszym renderze
-  useEffect(() => {
-    if (user) {
-      loadClientsFromDatabase()
-    }
-  }, [user])
-
   // Funkcja do pobierania historii zmian
   const fetchClientHistory = async (clientId: string) => {
     setLoadingHistory(true)
     try {
-      console.log('Rozpoczynam pobieranie historii dla klienta:', clientId)
-      
       // Dodaj małe opóźnienie aby triggery bazy danych zdążyły się wykonać
       await new Promise(resolve => setTimeout(resolve, 500))
       
       // Najpierw uruchom test dostępu
-      console.log('🔍 Testowanie dostępu do activity_logs...')
       const testResult = await activityLogsApi.testActivityLogsAccess()
-      console.log('📋 Wynik testu:', testResult)
       
       if (!testResult.success) {
-        console.error('❌ Test dostępu nieudany:', testResult.error)
+        console.error('❌ Test dostępu do activity_logs nieudany:', testResult.error)
         setClientHistory([])
         return
       }
       
-      console.log('✅ Test dostępu udany, pobieranie historii...')
       const history = await activityLogsApi.getClientHistory(clientId)
-      console.log('Pobrano historię:', history.length, 'wpisów')
       setClientHistory(history)
       
       // Automatycznie przewiń do dołu historii po odświeżeniu
@@ -475,54 +477,92 @@ export function ClientsTable() {
       
     } catch (error) {
       console.error('Błąd pobierania historii:', error)
-      console.error('Szczegóły błędu:', JSON.stringify(error, null, 2))
-      
-      // Sprawdź czy to problem z uprawnieniami
-      if (error && typeof error === 'object' && 'code' in error) {
-        console.error('Kod błędu Supabase:', (error as any).code)
-        console.error('Wiadomość błędu:', (error as any).message)
-      }
-      
-      // Ustaw pustą tablicę zamiast błędu
       setClientHistory([])
     } finally {
       setLoadingHistory(false)
     }
   }
 
-  // Funkcja do formatowania daty dla historii
-  const formatHistoryDate = (timestamp: string) => {
-    const date = new Date(timestamp)
-    return {
-      date: date.toLocaleDateString('pl-PL'),
-      time: date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+  // Funkcja sortowania
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      // Zmień kierunek sortowania jeśli to ta sama kolumna
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      // Nowa kolumna - domyślnie sortuj rosnąco
+      setSortField(field)
+      setSortDirection('asc')
+    }
+    setCurrentPage(1) // Reset do pierwszej strony po sortowaniu
+  }
+
+  // Funkcja sortowania danych
+  const sortClients = (clients: any[]) => {
+    return [...clients].sort((a, b) => {
+      let aValue = a[sortField]
+      let bValue = b[sortField]
+
+      // Obsługa sortowania po właścicielu
+      if (sortField === 'owner') {
+        aValue = a.owner?.full_name || ''
+        bValue = b.owner?.full_name || ''
+      }
+
+      // Obsługa sortowania po imię + nazwisko
+      if (sortField === 'name') {
+        aValue = `${a.first_name} ${a.last_name}`
+        bValue = `${b.first_name} ${b.last_name}`
+      }
+
+      // Konwersja na string dla porównania
+      aValue = String(aValue || '').toLowerCase()
+      bValue = String(bValue || '').toLowerCase()
+
+      if (sortDirection === 'asc') {
+        return aValue.localeCompare(bValue, 'pl', { numeric: true })
+      } else {
+        return bValue.localeCompare(aValue, 'pl', { numeric: true })
+      }
+    })
+  }
+
+  // Funkcja paginacji
+  const paginateClients = (clients: any[]) => {
+    const startIndex = (currentPage - 1) * pageSize
+    const endIndex = startIndex + pageSize
+    const paginated = clients.slice(startIndex, endIndex)
+    
+    const total = Math.ceil(clients.length / pageSize)
+    setTotalPages(total)
+    
+    return paginated
+  }
+
+  // Funkcja zmiany strony
+  const handlePageChange = (page: number) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page)
     }
   }
 
-  // Funkcja do mapowania ról na kolory badge
-  const getRoleColor = (role: string) => {
-    switch (role) {
-      case 'admin': return 'bg-red-500/20 text-red-400'
-      case 'szef': return 'bg-purple-500/20 text-purple-400'
-      case 'manager': return 'bg-blue-500/20 text-blue-400'
-      case 'pracownik': return 'bg-green-500/20 text-green-400'
-      default: return 'bg-slate-500/20 text-slate-400'
-    }
+  // Funkcja zmiany rozmiaru strony
+  const handlePageSizeChange = (newSize: string) => {
+    setPageSize(parseInt(newSize))
+    setCurrentPage(1) // Reset do pierwszej strony
   }
 
-  const handleEdit = (client: any) => {
-    // Sprawdź uprawnienia przed edycją
-    if (!user || !permissionsApi.canEdit(client, user)) {
-      alert('Nie masz uprawnień do edycji tego klienta')
-      return
-    }
-    
-    setEditingClient({ ...client })
-    setIsEditDialogOpen(true)
-    
-    // Pobierz historię zmian po otwarciu dialogu
-    fetchClientHistory(client.id)
+  // Ikona sortowania
+  const getSortIcon = (field: string) => {
+    if (sortField !== field) return <ArrowUpDown className="h-4 w-4" />
+    return sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
   }
+
+  // Załaduj klientów przy pierwszym renderze
+  useEffect(() => {
+    if (user) {
+      loadClientsFromDatabase()
+    }
+  }, [user])
 
   // Funkcja do zapisywania zmian klienta
   const handleSave = async () => {
@@ -530,9 +570,6 @@ export function ClientsTable() {
     
     setLoading(true)
     try {
-      console.log('🔄 Zapisywanie klienta:', editingClient.id)
-      console.log('🔄 Aktualny użytkownik:', user.id, user.email)
-      
       // Przygotuj tylko pola z bazy danych (bez UI properties)
       const clientData = {
         first_name: editingClient.first_name,
@@ -546,17 +583,12 @@ export function ClientsTable() {
         status: editingClient.status,
       }
       
-      console.log('🔄 Dane do zapisu (oczyszczone):', clientData)
-      
       const updatedClient = await clientsApi.updateClient(editingClient.id, clientData, user)
-      console.log('✅ Zapisano klienta:', updatedClient)
       
       // Odśwież listę klientów
-      console.log('🔄 Odświeżanie listy klientów...')
       await loadClientsFromDatabase()
       
       // Odśwież historię klienta po zapisaniu
-      console.log('🔄 Odświeżanie historii klienta...')
       await fetchClientHistory(editingClient.id)
       
       toast({
@@ -564,13 +596,8 @@ export function ClientsTable() {
         description: "Klient został zaktualizowany"
       })
       
-      // NIE zamykaj dialogu automatycznie - pozwól użytkownikowi zobaczyć zaktualizowaną historię
-      // Użytkownik może zamknąć dialog ręcznie
-      
     } catch (error) {
       console.error('❌ Błąd zapisywania klienta:', error)
-      console.error('❌ Typ błędu:', typeof error)
-      console.error('❌ Błąd toString:', String(error))
       
       // Lepsze wyświetlanie błędu
       let errorMessage = 'Nie udało się zapisać zmian klienta'
@@ -602,81 +629,89 @@ export function ClientsTable() {
   }
 
   const handleSaveNewClient = async () => {
-    if (newClient.first_name && newClient.last_name && newClient.company_name && user) {
-      setSavingNewClient(true)
-      try {
-        console.log('➕ Dodaję nowego klienta do bazy danych...')
-        
-        // Przygotuj dane do zapisu (tylko pola z bazy danych, bez ID - UUID zostanie wygenerowane automatycznie)
-        const clientData = {
-          first_name: newClient.first_name,
-          last_name: newClient.last_name,
-          company_name: newClient.company_name,
-          nip: newClient.nip || '',
-          phone: newClient.phone,
-          email: newClient.email || '',
-          notes: newClient.notes || '',
-          website: newClient.website || '',
-          status: newClient.status,
-          edited_by: user.id,
-          edited_at: new Date().toISOString(),
-          owner_id: user.id
-        }
-        
-        // Zapisz nowego klienta do bazy danych
-        const savedClient = await clientsApi.createClient(clientData, user)
-        console.log('✅ Nowy klient zapisany:', savedClient)
-        
-        setIsAddDialogOpen(false)
-        setNewClient(emptyClient)
-        
-        // Pokaż komunikat sukcesu
-        alert('Nowy klient został dodany pomyślnie!')
-        
-        // Przeładuj listę klientów z serwera
-        await loadClientsFromDatabase()
-        
-      } catch (error) {
-        console.error('❌ Błąd podczas dodawania klienta:', error)
-        alert('Błąd podczas dodawania klienta: ' + (error as Error).message)
-      } finally {
-        setSavingNewClient(false)
+    if (!user) return
+    
+    setSavingNewClient(true)
+    try {
+      // Przygotuj dane klienta (bez pól UI)
+      const clientData = {
+        first_name: newClient.first_name,
+        last_name: newClient.last_name,
+        company_name: newClient.company_name,
+        nip: newClient.nip,
+        phone: newClient.phone,
+        email: newClient.email,
+        notes: newClient.notes,
+        website: newClient.website,
+        status: newClient.status,
+        edited_by: user.id,
+        edited_at: new Date().toISOString(),
+        owner_id: user.id
       }
-    } else {
-      alert('Proszę wypełnić wszystkie wymagane pola: Imię, Nazwisko i Nazwa firmy')
+      
+      const savedClient = await clientsApi.createClient(clientData, user)
+      
+      toast({
+        title: "Sukces",
+        description: "Nowy klient został dodany"
+      })
+      
+      // Wyczyść formularz i zamknij dialog
+      setNewClient(emptyClient)
+      setIsAddDialogOpen(false)
+      
+      // Odśwież listę klientów
+      await loadClientsFromDatabase()
+      
+    } catch (error) {
+      console.error('❌ Błąd podczas dodawania klienta:', error)
+      
+      let errorMessage = 'Nie udało się dodać klienta'
+      if (error instanceof Error) {
+        errorMessage = error.message
+      }
+      
+      toast({
+        title: "Błąd",
+        description: errorMessage,
+        variant: "destructive"
+      })
+    } finally {
+      setSavingNewClient(false)
     }
   }
 
   const handleCancelAdd = () => {
-    setIsAddDialogOpen(false)
     setNewClient(emptyClient)
+    setIsAddDialogOpen(false)
   }
 
   const handleDelete = async (clientId: string) => {
-    const client = clients.find(c => c.id === clientId)
-    if (!client || !user || !permissionsApi.canDelete(client, user)) {
-      alert('Nie masz uprawnień do usunięcia tego klienta')
+    if (!user) return
+    
+    if (!confirm('Czy na pewno chcesz usunąć tego klienta? Ta operacja jest nieodwracalna.')) {
       return
     }
-
-    if (confirm('Czy na pewno chcesz usunąć tego klienta?')) {
-      try {
-        console.log('🗑️ Usuwam klienta z bazy danych...', clientId)
-        
-        // Usuń klienta z bazy danych
-        await clientsApi.deleteClient(clientId, user)
-        console.log('✅ Klient usunięty z bazy danych')
-        
-        // Pokaż komunikat sukcesu
-        alert('Klient został usunięty pomyślnie!')
-        
-        // Przeładuj listę klientów z serwera
-        await loadClientsFromDatabase()
-        
-      } catch (error) {
-        console.error('❌ Błąd podczas usuwania klienta:', error)
-        alert('Błąd podczas usuwania klienta: ' + (error as Error).message)
-      }
+    
+    try {
+      await clientsApi.deleteClient(clientId, user)
+      
+      toast({
+        title: "Sukces",
+        description: "Klient został usunięty"
+      })
+      
+      // Odśwież listę klientów
+      await loadClientsFromDatabase()
+      
+    } catch (error) {
+      console.error('❌ Błąd podczas usuwania klienta:', error)
+      
+      toast({
+        title: "Błąd",
+        description: "Nie udało się usunąć klienta",
+        variant: "destructive"
+      })
     }
   }
 
@@ -739,6 +774,7 @@ export function ClientsTable() {
   const resetFilters = () => {
     setSearchQuery('')
     setOwnerFilter('all')
+    setStatusFilter('all')
   }
 
   // Funkcja do obsługi kliknięcia w telefon
@@ -754,7 +790,50 @@ export function ClientsTable() {
   }
 
   // Sprawdź czy jakiekolwiek filtry są aktywne
-  const hasActiveFilters = searchQuery.trim() !== '' || ownerFilter !== 'all'
+  const hasActiveFilters = searchQuery.trim() !== '' || ownerFilter !== 'all' || statusFilter !== 'all'
+
+  // Funkcja do formatowania daty dla historii
+  const formatHistoryDate = (timestamp: string) => {
+    const date = new Date(timestamp)
+    return {
+      date: date.toLocaleDateString('pl-PL'),
+      time: date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+    }
+  }
+
+  // Funkcja do mapowania ról na kolory badge
+  const getRoleColor = (role: string) => {
+    switch (role) {
+      case 'admin': return 'bg-red-500/20 text-red-400'
+      case 'szef': return 'bg-purple-500/20 text-purple-400'
+      case 'manager': return 'bg-blue-500/20 text-blue-400'
+      case 'pracownik': return 'bg-green-500/20 text-green-400'
+      default: return 'bg-slate-500/20 text-slate-400'
+    }
+  }
+
+  // Funkcja do uzyskania właściwości badge'a statusu
+  const getStatusBadgeProps = (client: any) => {
+    return {
+      className: `text-xs ${statusColors[client.status as keyof typeof statusColors] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'}`,
+      title: client.status,
+      text: client.status
+    }
+  }
+
+  const handleEdit = (client: any) => {
+    // Sprawdź uprawnienia przed edycją
+    if (!user || !permissionsApi.canEdit(client, user)) {
+      alert('Nie masz uprawnień do edycji tego klienta')
+      return
+    }
+    
+    setEditingClient({ ...client })
+    setIsEditDialogOpen(true)
+    
+    // Pobierz historię zmian po otwarciu dialogu
+    fetchClientHistory(client.id)
+  }
 
   return (
     <div className="w-full h-full">
@@ -788,9 +867,42 @@ export function ClientsTable() {
               ))}
             </SelectContent>
           </Select>
+
+          {/* Filtr statusu */}
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-[200px]">
+              <SelectValue placeholder="Filtruj po statusie" />
+            </SelectTrigger>
+            <SelectContent className="bg-slate-700 border-slate-600">
+              <SelectItem 
+                value="all"
+                className="text-white hover:bg-slate-600"
+              >
+                Wszystkie statusy
+              </SelectItem>
+              {statusOptions.map((status) => (
+                <SelectItem 
+                  key={status} 
+                  value={status}
+                  className="text-white hover:bg-slate-600"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${statusColors[status].includes('blue') ? 'bg-blue-400' : 
+                      statusColors[status].includes('gray') ? 'bg-gray-400' :
+                      statusColors[status].includes('red') && statusColors[status].includes('red-600') ? 'bg-red-300' :
+                      statusColors[status].includes('red') ? 'bg-red-400' :
+                      statusColors[status].includes('orange') ? 'bg-orange-400' :
+                      statusColors[status].includes('green') ? 'bg-green-400' :
+                      statusColors[status].includes('yellow') ? 'bg-yellow-400' : 'bg-slate-400'}`}></div>
+                    <span>{status}</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           
           {/* Reset filtrów */}
-          {(searchQuery || ownerFilter !== 'all') && (
+          {(searchQuery || ownerFilter !== 'all' || statusFilter !== 'all') && (
             <Button
               variant="outline"
               onClick={resetFilters}
@@ -823,215 +935,218 @@ export function ClientsTable() {
       {user?.role === 'pracownik' && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
           <p className="text-sm text-blue-700">
-            ℹ️ <strong>Informacja:</strong> {t('clients.employeeInfo')}
+            <strong>Informacja:</strong> {t('clients.employeeInfo')}
           </p>
         </div>
       )}
 
-        {/* Tabela klientów - pełna szerokość */}
-        <Card className="bg-slate-800 border-slate-700">
-          <CardHeader>
-            <div className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="text-white">Tabela klientów</CardTitle>
-                <p className="text-slate-400 text-sm">
-                  {filteredClients.length} klientów • 
-                  {filteredClients.filter(c => c.status === 'sale').length} w sprzedaży • 
-                  {filteredClients.filter(c => c.status === 'canvas').length} w canvass
-                  {searchQuery || ownerFilter !== 'all' ? (
-                    <span className="text-cyan-400"> • filtrowane z {clients.length} ogółem</span>
-                  ) : null}
-                </p>
-              </div>
-              <div className="flex items-center gap-4">
-                <Button
-                  onClick={testDatabaseConnection}
-                  variant="outline"
-                  className="border-blue-600 text-blue-400 hover:bg-blue-500/20"
-                >
-                  Test DB
-                </Button>
-                <Button
-                  onClick={handleAddClient}
-                  className="bg-cyan-500 hover:bg-cyan-600 text-white"
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  Dodaj klienta
-                </Button>
-                <Button
-                  onClick={handleUploadFiles}
-                  variant="outline"
-                  className="border-slate-600 text-slate-300 hover:bg-slate-700"
-                >
-                  <Upload className="mr-2 h-4 w-4" />
-                  Import
-                </Button>
-              </div>
+      {/* Tabela klientów - pełna szerokość */}
+      <Card className="bg-slate-800 border-slate-700">
+        <CardHeader>
+          <div className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-white">Tabela klientów</CardTitle>
+              <p className="text-slate-400 text-sm">
+                {filteredClients.length} klientów • 
+                {filteredClients.filter(c => c.status === 'sale').length} w sprzedaży • 
+                {filteredClients.filter(c => c.status === 'canvas').length} w canvass
+                {totalPages > 1 && (
+                  <span className="text-cyan-400"> • strona {currentPage} z {totalPages}</span>
+                )}
+                {searchQuery || ownerFilter !== 'all' || statusFilter !== 'all' ? (
+                  <span className="text-cyan-400"> • filtrowane z {clients.length} ogółem</span>
+                ) : null}
+              </p>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-              <span className="text-sm text-slate-400">Live tryb aktywny</span>
+            <div className="flex items-center gap-4">
+              <Button
+                onClick={testDatabaseConnection}
+                variant="outline"
+                className="border-blue-600 text-blue-400 hover:bg-blue-500/20"
+              >
+                Test DB
+              </Button>
             </div>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
+          </div>
+        </CardHeader>
+        
+        <CardContent>
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400"></div>
+              <span className="ml-2 text-slate-400">Ładowanie klientów...</span>
+            </div>
+          ) : (
+            <div className="relative">
               <Table>
                 <TableHeader>
                   <TableRow className="border-slate-700">
-                    <TableHead className="text-slate-400">{t('clients.firstName')} / {t('clients.lastName')}</TableHead>
-                    <TableHead className="text-slate-400">{t('clients.company')} / NIP</TableHead>
+                    <TableHead className="text-slate-400">
+                      <button
+                        onClick={() => handleSort('name')}
+                        className="flex items-center gap-2 hover:text-white transition-colors"
+                      >
+                        {t('clients.firstName')} / {t('clients.lastName')}
+                        {getSortIcon('name')}
+                      </button>
+                    </TableHead>
+                    <TableHead className="text-slate-400">
+                      <button
+                        onClick={() => handleSort('company_name')}
+                        className="flex items-center gap-2 hover:text-white transition-colors"
+                      >
+                        {t('clients.company')}
+                        {getSortIcon('company_name')}
+                      </button>
+                    </TableHead>
                     <TableHead className="text-slate-400">Kontakt</TableHead>
-                    <TableHead className="text-slate-400">{t('clients.status')}</TableHead>
-                    <TableHead className="text-slate-400">{t('clients.owner')}</TableHead>
+                    <TableHead className="text-slate-400">
+                      <button
+                        onClick={() => handleSort('status')}
+                        className="flex items-center gap-2 hover:text-white transition-colors"
+                      >
+                        Status
+                        {getSortIcon('status')}
+                      </button>
+                    </TableHead>
+                    <TableHead className="text-slate-400">
+                      <button
+                        onClick={() => handleSort('owner')}
+                        className="flex items-center gap-2 hover:text-white transition-colors"
+                      >
+                        Właściciel
+                        {getSortIcon('owner')}
+                      </button>
+                    </TableHead>
                     <TableHead className="text-slate-400">Notatka</TableHead>
                     <TableHead className="text-slate-400">Przypomnienie</TableHead>
                     <TableHead className="text-slate-400">Akcje</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {loading ? (
-                    <TableRow>
-                      <TableCell colSpan={8} className="text-center py-8">
-                        <div className="flex items-center justify-center">
-                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-400"></div>
-                          <span className="ml-2 text-slate-400">Ładowanie klientów...</span>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ) : filteredClients.length === 0 ? (
+                  {paginatedClients.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={8} className="text-center py-8 text-slate-400">
                         Brak klientów do wyświetlenia
                       </TableCell>
                     </TableRow>
                   ) : (
-                    filteredClients.map((client) => (
-                    <TableRow 
-                      key={client.id} 
-                      className={`border-slate-700 ${
-                        client.isBeingEdited 
-                          ? 'bg-yellow-500/10 border-l-4 border-l-yellow-400' 
-                          : 'hover:bg-slate-700/50'
-                      }`}
-                    >
-                      <TableCell>
-                        <div>
-                          <div className="text-sm font-medium text-white">
-                            {client.first_name} {client.last_name}
+                    paginatedClients.map((client) => (
+                      <TableRow key={client.id} className="border-slate-700 hover:bg-slate-700/50">
+                        <TableCell>
+                          <div className="text-sm text-white">{client.first_name} {client.last_name}</div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm text-white">{client.company_name}</div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <button
+                              onClick={() => handlePhoneClick(client)}
+                              className="text-cyan-400 hover:text-cyan-300 text-sm transition-colors cursor-pointer hover:underline"
+                            >
+                              {client.phone}
+                            </button>
+                            <div className="text-sm text-slate-400">{client.email}</div>
                           </div>
-                          {/* Live editing info */}
-                          {client.isBeingEdited && client.editedByUser !== currentUser && (
-                            <div className="text-xs text-yellow-400 flex items-center gap-1">
-                              <Eye className="h-3 w-3" />
-                              Edytowane przez: {client.editedByUser}
-                            </div>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="text-sm text-white">{client.company_name}</div>
-                        <div className="text-sm text-slate-400">NIP: {client.nip}</div>
-                      </TableCell>
-                      <TableCell>
-                        <button
-                          onClick={() => handlePhoneClick(client)}
-                          className="text-sm text-cyan-400 hover:text-cyan-300 hover:underline transition-colors cursor-pointer"
-                        >
-                          {client.phone}
-                        </button>
-                        <div className="text-sm text-slate-400">{client.email}</div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge className={statusColors[client.status as keyof typeof statusColors] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'}>
-                          {t(`clients.statuses.${client.status}`) || client.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <TooltipProvider>
-                          {client.owner ? (
-                            <Tooltip>
-                              <TooltipTrigger>
-                                <Avatar className="h-8 w-8 cursor-pointer hover:ring-2 hover:ring-cyan-400/50 transition-all">
-                                  <AvatarImage 
-                                    src={client.owner.avatar_url || '/placeholder-user.jpg'} 
-                                    alt={client.owner.full_name}
-                                    className="object-cover"
-                                  />
-                                  <AvatarFallback className="bg-slate-700 text-slate-300 text-xs">
-                                    {client.owner.full_name
-                                      .split(' ')
-                                      .map((name: string) => name[0])
-                                      .join('')
-                                      .toUpperCase()
-                                      .slice(0, 2)
-                                    }
-                                  </AvatarFallback>
-                                </Avatar>
-                              </TooltipTrigger>
-                              <TooltipContent className="bg-slate-800 border-slate-600">
-                                <div className="text-sm">
-                                  <div className="font-medium text-white">{client.owner.full_name}</div>
-                                  <div className="text-slate-400">{client.owner.email}</div>
-                                  <div className="text-xs text-slate-500 mt-1">Właściciel klienta</div>
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            <Tooltip>
-                              <TooltipTrigger>
-                                <Avatar className="h-8 w-8 cursor-pointer opacity-60">
-                                  <AvatarFallback className="bg-slate-700 text-slate-500 text-xs">
-                                    ?
-                                  </AvatarFallback>
-                                </Avatar>
-                              </TooltipTrigger>
-                              <TooltipContent className="bg-slate-800 border-slate-600">
-                                <div className="text-sm text-slate-400">
-                                  Klient nie ma przypisanego właściciela
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          )}
-                        </TooltipProvider>
-                      </TableCell>
-                      <TableCell>
-                        <div className="text-sm text-slate-300 max-w-xs truncate">
-                          {client.notes}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {client.reminder.enabled ? (
-                          <div className="flex items-center gap-1">
-                            <AlertCircle className="h-3 w-3 text-orange-400" />
-                            <div className="text-xs">
-                              <div className="text-orange-400 font-medium">
-                                {formatReminderDate(client.reminder)}
+                        </TableCell>
+                        <TableCell>
+                          {(() => {
+                            const badgeProps = getStatusBadgeProps(client)
+                            return (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger>
+                                    <Badge className={badgeProps.className}>
+                                      {badgeProps.text}
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p>{badgeProps.title}</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            )
+                          })()}
+                        </TableCell>
+                        <TableCell>
+                          <TooltipProvider>
+                            {client.owner ? (
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <Avatar className="h-8 w-8 cursor-pointer hover:ring-2 hover:ring-cyan-400/50 transition-all">
+                                    <AvatarImage 
+                                      src={getAvatarUrl(client.owner.avatar_url) || '/placeholder-user.jpg'} 
+                                      alt={client.owner.full_name}
+                                      className="object-cover"
+                                    />
+                                    <AvatarFallback className="bg-slate-700 text-slate-300 text-xs">
+                                      {client.owner.full_name
+                                        ?.split(' ')
+                                        .map((name: string) => name[0])
+                                        .join('')
+                                        .toUpperCase()
+                                        .slice(0, 2) || '?'}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <div className="text-sm">
+                                    <div className="font-medium">{client.owner.full_name}</div>
+                                    <div className="text-slate-400">{client.owner.email}</div>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <Avatar className="h-8 w-8 cursor-pointer">
+                                    <AvatarFallback className="bg-slate-600 text-slate-400 text-xs">
+                                      ?
+                                    </AvatarFallback>
+                                  </Avatar>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <div className="text-sm">
+                                    {client.owner_id ? (
+                                      <>
+                                        <div className="text-red-400">Brak danych właściciela</div>
+                                        <div className="text-slate-400">ID: {client.owner_id}</div>
+                                      </>
+                                    ) : (
+                                      <div className="text-slate-400">Klient nie ma przypisanego właściciela</div>
+                                    )}
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                            {client.owner_id && !client.owner && (
+                              <div className="text-xs text-red-400 mt-1">
+                                DEBUG: owner_id={client.owner_id} ale brak owner obiektu
                               </div>
-                              <div className="text-slate-400 truncate max-w-24">
-                                {client.reminder.note}
-                              </div>
-                            </div>
+                            )}
+                          </TooltipProvider>
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm text-slate-300 max-w-[200px] truncate">
+                            {client.notes || '-'}
                           </div>
-                        ) : (
-                          <span className="text-slate-500 text-xs">Brak</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          {/* Przycisk edycji tylko dla osób z uprawnieniami */}
-                          {user && permissionsApi.canEdit(client, user) && (
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm text-slate-300">
+                            {formatReminderDate(client.reminder) || '-'}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
                             <Button
                               size="sm"
                               variant="outline"
                               onClick={() => handleEdit(client)}
-                              disabled={client.isBeingEdited && client.editedByUser !== currentUser}
-                              className="h-8 w-8 p-0 border-slate-600 hover:bg-slate-700 disabled:opacity-50"
+                              className="h-8 w-8 p-0 border-slate-600 hover:bg-slate-700"
                             >
                               <Edit className="h-4 w-4" />
                             </Button>
-                          )}
-                          {/* Przycisk usuń tylko dla manager/szef/admin */}
-                          {user && permissionsApi.canDelete(client, user) && (
                             <Button
                               size="sm"
                               variant="outline"
@@ -1040,55 +1155,157 @@ export function ClientsTable() {
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
-                          )}
-                          {/* Informacja gdy brak uprawnień */}
-                          {user && !permissionsApi.canEdit(client, user) && !permissionsApi.canDelete(client, user) && (
-                            <span className="text-xs text-slate-500">Brak uprawnień</span>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                          </div>
+                        </TableCell>
+                      </TableRow>
                     ))
                   )}
                 </TableBody>
               </Table>
             </div>
-          </CardContent>
-        </Card>
+          )}
+        </CardContent>
+      </Card>
 
-        {/* Dialog do edycji klienta */}
-        <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-6xl max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle className="text-white flex items-center gap-2">
-                <Edit className="h-5 w-5" />
-                Edytuj klienta: {editingClient?.first_name} {editingClient?.last_name}
-              </DialogTitle>
-            </DialogHeader>
-            
-            {editingClient && (
-              <div className="grid grid-cols-3 gap-6 py-4">
-                {/* Kolumna 1 & 2: Formularz edycji */}
-                <div className="col-span-2 space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="first_name" className="text-slate-300">Imię</Label>
-                      <Input
-                        id="first_name"
-                        value={editingClient.first_name}
-                        onChange={(e) => handleInputChange('first_name', e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
-                    </div>
+      {/* Paginacja */}
+      {filteredClients.length > 0 && (
+        <div className="bg-slate-800 border-slate-700 rounded-lg border mt-4 p-4">
+          <div className="flex items-center justify-between">
+            {/* Informacje o stronach */}
+            <div className="flex items-center gap-4 text-sm text-slate-400">
+              <span>
+                Wyświetlanych {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, filteredClients.length)} z {filteredClients.length} klientów
+              </span>
+              
+              {/* Wybór ilości na stronę */}
+              <div className="flex items-center gap-2">
+                <span>Pokaż:</span>
+                <Select value={pageSize.toString()} onValueChange={handlePageSizeChange}>
+                  <SelectTrigger className="w-20 h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="10">10</SelectItem>
+                    <SelectItem value="25">25</SelectItem>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Nawigacja stronami */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage === 1}
+                className="h-8 w-8 p-0"
+              >
+                <ChevronsLeft className="h-4 w-4" />
+              </Button>
+              
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage === 1}
+                className="h-8 w-8 p-0"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+
+              {/* Numery stron */}
+              <div className="flex items-center gap-1">
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum = i + 1
+                  if (totalPages > 5) {
+                    if (currentPage <= 3) {
+                      pageNum = i + 1
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i
+                    } else {
+                      pageNum = currentPage - 2 + i
+                    }
+                  }
+                  
+                  return (
+                    <Button
+                      key={pageNum}
+                      variant={currentPage === pageNum ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => handlePageChange(pageNum)}
+                      className="h-8 w-8 p-0"
+                    >
+                      {pageNum}
+                    </Button>
+                  )
+                })}
+              </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage === totalPages}
+                className="h-8 w-8 p-0"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage === totalPages}
+                className="h-8 w-8 p-0"
+              >
+                <ChevronsRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dialog do edycji klienta */}
+      <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-7xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader className="flex-shrink-0 border-b border-slate-600 pb-4">
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Edit className="h-5 w-5" />
+              Edytuj klienta: {editingClient?.first_name} {editingClient?.last_name}
+            </DialogTitle>
+          </DialogHeader>
+          
+          {editingClient && (
+            <div className="flex-1 overflow-y-auto py-4 px-1 custom-scrollbar">
+              <div className="pr-3">
+                <div className="grid grid-cols-3 gap-6">
+                  {/* Kolumna 1: Podstawowe dane */}
+                  <div className="space-y-4">
+                    <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2">Podstawowe informacje</h3>
                     
-                    <div className="space-y-2">
-                      <Label htmlFor="last_name" className="text-slate-300">Nazwisko</Label>
-                      <Input
-                        id="last_name"
-                        value={editingClient.last_name}
-                        onChange={(e) => handleInputChange('last_name', e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="first_name" className="text-slate-300">Imię</Label>
+                        <Input
+                          id="first_name"
+                          value={editingClient.first_name}
+                          onChange={(e) => handleInputChange('first_name', e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white"
+                        />
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <Label htmlFor="last_name" className="text-slate-300">Nazwisko</Label>
+                        <Input
+                          id="last_name"
+                          value={editingClient.last_name}
+                          onChange={(e) => handleInputChange('last_name', e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white"
+                        />
+                      </div>
                     </div>
                     
                     <div className="space-y-2">
@@ -1160,487 +1377,493 @@ export function ClientsTable() {
                       </Select>
                     </div>
                   </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="notes" className="text-slate-300">Notatka</Label>
-                    <Textarea
-                      id="notes"
-                      value={editingClient.notes}
-                      onChange={(e) => handleInputChange('notes', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white min-h-[100px]"
-                      placeholder="Dodaj notatki o kliencie..."
-                    />
-                  </div>
 
-                  {/* Sekcja przypomnienia */}
-                  <div className="space-y-4 border-t border-slate-600 pt-4">
-                    <div className="flex items-center gap-2">
-                      <Checkbox
-                        id="reminderEnabled"
-                        checked={editingClient.reminder.enabled}
-                        onCheckedChange={(checked) => handleReminderChange('enabled', checked)}
-                        className="border-slate-600"
+                  {/* Kolumna 2: Notatki i przypomnienia */}
+                  <div className="space-y-4">
+                    <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2">Notatki i przypomnienia</h3>
+                    
+                    <div className="space-y-2">
+                      <Label htmlFor="notes" className="text-slate-300">Notatka</Label>
+                      <Textarea
+                        id="notes"
+                        value={editingClient.notes}
+                        onChange={(e) => handleInputChange('notes', e.target.value)}
+                        className="bg-slate-700 border-slate-600 text-white min-h-[150px]"
+                        placeholder="Dodaj notatki o kliencie..."
                       />
-                      <Label htmlFor="reminderEnabled" className="text-slate-300 flex items-center gap-2">
-                        <Clock className="h-4 w-4" />
-                        Ustaw przypomnienie
-                      </Label>
                     </div>
 
-                    {editingClient.reminder.enabled && (
-                      <div className="grid grid-cols-2 gap-4 ml-6">
-                        <div className="space-y-2">
-                          <Label htmlFor="reminderDate" className="text-slate-300">Data</Label>
-                          <Input
-                            id="reminderDate"
-                            type="date"
-                            value={editingClient.reminder.date}
-                            onChange={(e) => handleReminderChange('date', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white"
-                          />
-                        </div>
-                        
-                        <div className="space-y-2">
-                          <Label htmlFor="reminderTime" className="text-slate-300">Godzina</Label>
-                          <Input
-                            id="reminderTime"
-                            type="time"
-                            value={editingClient.reminder.time}
-                            onChange={(e) => handleReminderChange('time', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white"
-                          />
-                        </div>
-                        
-                        <div className="col-span-2 space-y-2">
-                          <Label htmlFor="reminderNote" className="text-slate-300">Notatka przypomnienia</Label>
-                          <Input
-                            id="reminderNote"
-                            value={editingClient.reminder.note}
-                            onChange={(e) => handleReminderChange('note', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white"
-                            placeholder="O czym przypomnieć?"
-                          />
-                        </div>
+                    {/* Sekcja przypomnienia */}
+                    <div className="space-y-4 border-t border-slate-600 pt-4">
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          id="reminderEnabled"
+                          checked={editingClient.reminder.enabled}
+                          onCheckedChange={(checked) => handleReminderChange('enabled', checked)}
+                          className="border-slate-600"
+                        />
+                        <Label htmlFor="reminderEnabled" className="text-slate-300 flex items-center gap-2">
+                          <Clock className="h-4 w-4" />
+                          Ustaw przypomnienie
+                        </Label>
                       </div>
-                    )}
-                  </div>
-                </div>
 
-                {/* Kolumna 3: Historia zmian */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-600 pb-2">
-                    <div className="flex items-center gap-2">
-                      <History className="h-5 w-5 text-slate-400" />
-                      <h3 className="font-semibold text-slate-300">Historia zmian</h3>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {clientHistory.length > 3 && (
-                        <div className="text-xs text-slate-400 flex items-center gap-1">
-                          <span>{clientHistory.length} wpisów</span>
-                          <div className="w-1 h-1 bg-slate-400 rounded-full"></div>
-                          <span>przewijaj</span>
+                      {editingClient.reminder.enabled && (
+                        <div className="grid grid-cols-2 gap-4 ml-6">
+                          <div className="space-y-2">
+                            <Label htmlFor="reminderDate" className="text-slate-300">Data</Label>
+                            <Input
+                              id="reminderDate"
+                              type="date"
+                              value={editingClient.reminder.date}
+                              onChange={(e) => handleReminderChange('date', e.target.value)}
+                              className="bg-slate-700 border-slate-600 text-white"
+                            />
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <Label htmlFor="reminderTime" className="text-slate-300">Godzina</Label>
+                            <Input
+                              id="reminderTime"
+                              type="time"
+                              value={editingClient.reminder.time}
+                              onChange={(e) => handleReminderChange('time', e.target.value)}
+                              className="bg-slate-700 border-slate-600 text-white"
+                            />
+                          </div>
+                          
+                          <div className="col-span-2 space-y-2">
+                            <Label htmlFor="reminderNote" className="text-slate-300">Notatka przypomnienia</Label>
+                            <Input
+                              id="reminderNote"
+                              value={editingClient.reminder.note}
+                              onChange={(e) => handleReminderChange('note', e.target.value)}
+                              className="bg-slate-700 border-slate-600 text-white"
+                              placeholder="O czym przypomnieć?"
+                            />
+                          </div>
                         </div>
                       )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => editingClient && fetchClientHistory(editingClient.id)}
-                        disabled={loadingHistory}
-                        className="h-6 text-xs border-slate-600 hover:bg-slate-700"
-                      >
-                        {loadingHistory ? (
-                          <div className="animate-spin rounded-full h-3 w-3 border-b border-cyan-400"></div>
-                        ) : (
-                          <RefreshCw className="h-3 w-3" />
-                        )}
-                      </Button>
                     </div>
                   </div>
-                  
-                  <div className="relative scroll-fade-bottom" data-scrollable={clientHistory.length > 3}>
-                    <ScrollArea ref={historyScrollRef} className="h-[400px] w-full rounded-md border border-slate-700 bg-slate-800/50 custom-scrollbar scroll-smooth">
-                      <div className="p-4">
-                        {loadingHistory ? (
-                          <div className="flex items-center justify-center py-8">
-                            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-400"></div>
-                            <span className="ml-2 text-slate-400">Ładowanie...</span>
-                          </div>
-                        ) : clientHistory.length > 0 ? (
-                          <div className="space-y-3">
-                            {clientHistory.map((entry, index) => {
-                              const { date, time } = formatHistoryDate(entry.timestamp)
-                              return (
-                                <div key={entry.id} className="bg-slate-700/50 rounded-lg p-3 border border-slate-600 relative">
-                                  {index === 0 && (
-                                    <div className="absolute -top-1 -right-1 w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></div>
-                                  )}
-                                  <div className="flex items-start justify-between mb-2">
-                                    <div className="flex items-center gap-2">
-                                      <Avatar className="h-6 w-6">
-                                        <AvatarImage 
-                                          src={entry.editor_avatar || '/placeholder-user.jpg'} 
-                                          alt={entry.editor_name}
-                                          className="object-cover"
-                                        />
-                                        <AvatarFallback className="bg-slate-600 text-slate-300 text-xs">
-                                          {entry.editor_name
-                                            ?.split(' ')
-                                            .map((name: string) => name[0])
-                                            .join('')
-                                            .toUpperCase()
-                                            .slice(0, 2) || '?'}
-                                        </AvatarFallback>
-                                      </Avatar>
-                                      <span className="text-sm font-medium text-white">
-                                        {entry.editor_name}
-                                      </span>
-                                      <Badge className={`text-xs ${getRoleColor(entry.editor_role || 'unknown')}`}>
-                                        {entry.editor_role}
-                                      </Badge>
-                                    </div>
-                                  </div>
-                                  
-                                  <div className="text-xs text-slate-400 mb-2">
-                                    {date} • {time}
-                                  </div>
-                                  
-                                  {entry.field_changed === 'status' && entry.new_value && (
-                                    <div className="text-sm">
-                                      <span className="text-slate-400">Status:</span>
-                                      <Badge className={`ml-2 text-xs ${statusColors[entry.new_value as keyof typeof statusColors] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'}`}>
-                                        {entry.new_value}
-                                      </Badge>
-                                    </div>
-                                  )}
-                                  
-                                  {entry.field_changed !== 'status' && (
-                                    <div className="text-sm text-slate-300">
-                                      <span className="text-slate-400">{entry.field_changed}:</span>
-                                      <span className="ml-1">{entry.new_value || 'Brak wartości'}</span>
-                                    </div>
-                                  )}
-                                  
-                                  <div className="text-xs text-slate-500 mt-1">
-                                    {entry.change_type === 'create' && 'Utworzono'}
-                                    {entry.change_type === 'update' && 'Zaktualizowano'}
-                                    {entry.change_type === 'delete' && 'Usunięto'}
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        ) : (
-                          <div className="text-center py-8 text-slate-400">
-                            <History className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                            <p>Brak historii zmian</p>
+
+                  {/* Kolumna 3: Historia zmian */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-600 pb-2">
+                      <div className="flex items-center gap-2">
+                        <History className="h-5 w-5 text-slate-400" />
+                        <h3 className="font-semibold text-slate-300">Historia zmian</h3>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {clientHistory.length > 3 && (
+                          <div className="text-xs text-slate-400 flex items-center gap-1">
+                            <span>{clientHistory.length} wpisów</span>
+                            <div className="w-1 h-1 bg-slate-400 rounded-full"></div>
+                            <span>przewijaj</span>
                           </div>
                         )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => editingClient && fetchClientHistory(editingClient.id)}
+                          disabled={loadingHistory}
+                          className="h-6 text-xs border-slate-600 hover:bg-slate-700"
+                        >
+                          {loadingHistory ? (
+                            <div className="animate-spin rounded-full h-3 w-3 border-b border-cyan-400"></div>
+                          ) : (
+                            <RefreshCw className="h-3 w-3" />
+                          )}
+                        </Button>
                       </div>
-                    </ScrollArea>
+                    </div>
                     
-                    {/* Wskaźnik przewijania na dole - klikalny */}
-                    {clientHistory.length > 3 && (
-                      <button
-                        onClick={scrollToBottom}
-                        className="absolute bottom-2 right-2 bg-slate-900/90 hover:bg-slate-800/90 rounded-full px-2 py-1 text-xs text-slate-400 hover:text-slate-300 transition-colors cursor-pointer border border-slate-600 hover:border-slate-500"
-                        title="Przewiń do końca"
-                      >
-                        ↓ {clientHistory.length - 3}+ więcej
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            <div className="flex justify-end gap-2 pt-4 border-t border-slate-600">
-              <Button
-                variant="outline"
-                onClick={handleCancel}
-                className="border-slate-600 text-slate-300 hover:bg-slate-700"
-              >
-                Anuluj
-              </Button>
-              <Button
-                onClick={handleSave}
-                className="bg-cyan-500 hover:bg-cyan-600 text-white"
-              >
-                Zapisz zmiany
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-
-        {/* Dialog do dodawania nowego klienta */}
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
-            <DialogHeader className="flex-shrink-0 border-b border-slate-600 pb-4">
-              <DialogTitle className="text-white flex items-center gap-2">
-                <Plus className="h-5 w-5" />
-                Dodaj nowego klienta
-              </DialogTitle>
-            </DialogHeader>
-            
-            <div className="flex-1 overflow-y-auto py-4 px-1 custom-scrollbar">
-              <div className="pr-3">
-                <div className="grid grid-cols-2 gap-4 py-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="newFirst_name" className="text-slate-300">Imię *</Label>
-                    <Input
-                      id="newFirst_name"
-                      value={newClient.first_name}
-                      onChange={(e) => handleNewClientInputChange('first_name', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
-                      placeholder="Wprowadź imię"
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="newLast_name" className="text-slate-300">Nazwisko *</Label>
-                    <Input
-                      id="newLast_name"
-                      value={newClient.last_name}
-                      onChange={(e) => handleNewClientInputChange('last_name', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
-                      placeholder="Wprowadź nazwisko"
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="newCompany_name" className="text-slate-300">Firma *</Label>
-                    <Input
-                      id="newCompany_name"
-                      value={newClient.company_name}
-                      onChange={(e) => handleNewClientInputChange('company_name', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
-                      placeholder="Nazwa firmy"
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="newNip" className="text-slate-300">NIP</Label>
-                    <Input
-                      id="newNip"
-                      value={newClient.nip}
-                      onChange={(e) => handleNewClientInputChange('nip', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
-                      placeholder="0000000000"
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="newPhone" className="text-slate-300">Telefon</Label>
-                    <Input
-                      id="newPhone"
-                      value={newClient.phone}
-                      onChange={(e) => handleNewClientInputChange('phone', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
-                      placeholder="+48 000 000 000"
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="newEmail" className="text-slate-300">Email</Label>
-                    <Input
-                      id="newEmail"
-                      value={newClient.email}
-                      onChange={(e) => handleNewClientInputChange('email', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
-                      placeholder="email@firma.pl"
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="newWebsite" className="text-slate-300">Strona WWW</Label>
-                    <Input
-                      id="newWebsite"
-                      value={newClient.website}
-                      onChange={(e) => handleNewClientInputChange('website', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white"
-                      placeholder="www.firma.pl"
-                    />
-                  </div>
-                  
-                  <div className="space-y-2">
-                    <Label htmlFor="newStatus" className="text-slate-300">Status</Label>
-                    <Select 
-                      value={newClient.status} 
-                      onValueChange={(value) => handleNewClientInputChange('status', value)}
-                    >
-                      <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-700 border-slate-600">
-                        {statusOptions.map((status) => (
-                          <SelectItem key={status} value={status} className="text-white hover:bg-slate-600">
-                            {status}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  <div className="col-span-2 space-y-2">
-                    <Label htmlFor="newNotes" className="text-slate-300">Notatka</Label>
-                    <Textarea
-                      id="newNotes"
-                      value={newClient.notes}
-                      onChange={(e) => handleNewClientInputChange('notes', e.target.value)}
-                      className="bg-slate-700 border-slate-600 text-white min-h-[100px]"
-                      placeholder="Dodaj notatki o kliencie..."
-                    />
-                  </div>
-
-                  {/* Sekcja przypomnienia dla nowego klienta */}
-                  <div className="col-span-2 space-y-4 border-t border-slate-600 pt-4">
-                    <div className="flex items-center gap-2">
-                      <Checkbox
-                        id="newReminderEnabled"
-                        checked={newClient.reminder.enabled}
-                        onCheckedChange={(checked) => handleNewClientReminderChange('enabled', checked)}
-                        className="border-slate-600"
-                      />
-                      <Label htmlFor="newReminderEnabled" className="text-slate-300 flex items-center gap-2">
-                        <Clock className="h-4 w-4" />
-                        Ustaw przypomnienie
-                      </Label>
+                    <div className="relative scroll-fade-bottom" data-scrollable={clientHistory.length > 3}>
+                      <ScrollArea ref={historyScrollRef} className="h-[400px] w-full rounded-md border border-slate-700 bg-slate-800/50 custom-scrollbar scroll-smooth">
+                        <div className="p-4">
+                          {loadingHistory ? (
+                            <div className="flex items-center justify-center py-8">
+                              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-400"></div>
+                              <span className="ml-2 text-slate-400">Ładowanie...</span>
+                            </div>
+                          ) : clientHistory.length > 0 ? (
+                            <div className="space-y-3">
+                              {clientHistory.map((entry, index) => {
+                                const { date, time } = formatHistoryDate(entry.timestamp)
+                                return (
+                                  <div key={entry.id} className="bg-slate-700/50 rounded-lg p-3 border border-slate-600 relative">
+                                    {index === 0 && (
+                                      <div className="absolute -top-1 -right-1 w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></div>
+                                    )}
+                                    <div className="flex items-start justify-between mb-2">
+                                      <div className="flex items-center gap-2">
+                                        <Avatar className="h-6 w-6">
+                                          <AvatarImage 
+                                            src={getAvatarUrl(entry.editor_avatar) || '/placeholder-user.jpg'} 
+                                            alt={entry.editor_name}
+                                            className="object-cover"
+                                          />
+                                          <AvatarFallback className="bg-slate-600 text-slate-300 text-xs">
+                                            {entry.editor_name
+                                              ?.split(' ')
+                                              .map((name: string) => name[0])
+                                              .join('')
+                                              .toUpperCase()
+                                              .slice(0, 2) || '?'}
+                                          </AvatarFallback>
+                                        </Avatar>
+                                        <span className="text-sm font-medium text-white">
+                                          {entry.editor_name}
+                                        </span>
+                                        <Badge className={`text-xs ${getRoleColor(entry.editor_role || 'unknown')}`}>
+                                          {entry.editor_role}
+                                        </Badge>
+                                      </div>
+                                    </div>
+                                    
+                                    <div className="text-xs text-slate-400 mb-2">
+                                      {date} • {time}
+                                    </div>
+                                    
+                                    {entry.field_changed === 'status' && entry.new_value && (
+                                      <div className="text-sm">
+                                        <span className="text-slate-400">Status:</span>
+                                        <Badge className={`ml-2 text-xs ${statusColors[entry.new_value as keyof typeof statusColors] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'}`}>
+                                          {entry.new_value}
+                                        </Badge>
+                                      </div>
+                                    )}
+                                    
+                                    {entry.field_changed !== 'status' && (
+                                      <div className="text-sm text-slate-300">
+                                        <span className="text-slate-400">{entry.field_changed}:</span>
+                                        <span className="ml-1">{entry.new_value || 'Brak wartości'}</span>
+                                      </div>
+                                    )}
+                                    
+                                    <div className="text-xs text-slate-500 mt-1">
+                                      {entry.change_type === 'create' && 'Utworzono'}
+                                      {entry.change_type === 'update' && 'Zaktualizowano'}
+                                      {entry.change_type === 'delete' && 'Usunięto'}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <div className="text-center py-8 text-slate-400">
+                              <History className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                              <p>Brak historii zmian</p>
+                            </div>
+                          )}
+                        </div>
+                      </ScrollArea>
+                      
+                      {/* Wskaźnik przewijania na dole - klikalny */}
+                      {clientHistory.length > 3 && (
+                        <button
+                          onClick={scrollToBottom}
+                          className="absolute bottom-2 right-2 bg-slate-900/90 hover:bg-slate-800/90 rounded-full px-2 py-1 text-xs text-slate-400 hover:text-slate-300 transition-colors cursor-pointer border border-slate-600 hover:border-slate-500"
+                          title="Przewiń do końca"
+                        >
+                          ↓ {clientHistory.length - 3}+ więcej
+                        </button>
+                      )}
                     </div>
-
-                    {newClient.reminder.enabled && (
-                      <div className="grid grid-cols-2 gap-4 ml-6">
-                        <div className="space-y-2">
-                          <Label htmlFor="newReminderDate" className="text-slate-300">Data</Label>
-                          <Input
-                            id="newReminderDate"
-                            type="date"
-                            value={newClient.reminder.date}
-                            onChange={(e) => handleNewClientReminderChange('date', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white"
-                          />
-                        </div>
-                        
-                        <div className="space-y-2">
-                          <Label htmlFor="newReminderTime" className="text-slate-300">Godzina</Label>
-                          <Input
-                            id="newReminderTime"
-                            type="time"
-                            value={newClient.reminder.time}
-                            onChange={(e) => handleNewClientReminderChange('time', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white"
-                          />
-                        </div>
-                        
-                        <div className="col-span-2 space-y-2">
-                          <Label htmlFor="newReminderNote" className="text-slate-300">Notatka przypomnienia</Label>
-                          <Input
-                            id="newReminderNote"
-                            value={newClient.reminder.note}
-                            onChange={(e) => handleNewClientReminderChange('note', e.target.value)}
-                            className="bg-slate-700 border-slate-600 text-white"
-                            placeholder="O czym przypomnieć?"
-                          />
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
             </div>
-            
-            <div className="flex-shrink-0 border-t border-slate-600 pt-4">
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={handleCancelAdd}
-                  className="border-slate-600 text-slate-300 hover:bg-slate-700"
-                >
-                  Anuluj
-                </Button>
-                <Button
-                  onClick={handleSaveNewClient}
-                  disabled={!newClient.first_name || !newClient.last_name || !newClient.company_name || savingNewClient}
-                  className="bg-green-500 hover:bg-green-600 text-white disabled:opacity-50"
-                >
-                  {savingNewClient ? (
-                    <>
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                      Dodaję...
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="h-4 w-4 mr-2" />
-                      Dodaj klienta
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
+          )}
+          
+          <div className="flex justify-end gap-2 pt-4 border-t border-slate-600 flex-shrink-0">
+            <Button
+              variant="outline"
+              onClick={handleCancel}
+              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+            >
+              Anuluj
+            </Button>
+            <Button
+              onClick={handleSave}
+              className="bg-cyan-500 hover:bg-cyan-600 text-white"
+            >
+              Zapisz zmiany
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
-        {/* Dialog do wgrywania plików */}
-        <Dialog open={isUploadDialogOpen} onOpenChange={setIsUploadDialogOpen}>
-          <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
-            <DialogHeader>
-              <DialogTitle className="text-white flex items-center gap-2">
-                <Upload className="h-5 w-5" />
-                Wgraj plik z klientami
-              </DialogTitle>
-            </DialogHeader>
-            
-            <div className="py-6">
-              <div className="border-2 border-dashed border-slate-600 rounded-lg p-8 text-center">
-                <FileSpreadsheet className="h-12 w-12 text-slate-400 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-white mb-2">Przeciągnij plik tutaj</h3>
-                <p className="text-slate-400 mb-4">lub kliknij aby wybrać plik</p>
-                <Button 
-                  variant="outline" 
-                  className="border-slate-600 text-slate-300 hover:bg-slate-700"
-                >
-                  Wybierz plik
-                </Button>
-              </div>
-              
-              <div className="mt-4 text-sm text-slate-400">
-                <p className="mb-2">Obsługiwane formaty:</p>
-                <ul className="list-disc list-inside space-y-1">
-                  <li>Excel (.xlsx, .xls)</li>
-                  <li>CSV (.csv)</li>
-                  <li>JSON (.json)</li>
-                </ul>
-              </div>
-              
-              <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                <p className="text-blue-400 text-sm">
-                  💡 Upewnij się, że plik zawiera kolumny: Imię, Nazwisko, Firma, NIP, Telefon, Email
-                </p>
+      {/* Dialog do dodawania nowego klienta */}
+      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader className="flex-shrink-0 border-b border-slate-600 pb-4">
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Plus className="h-5 w-5" />
+              Dodaj nowego klienta
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="flex-1 overflow-y-auto py-4 px-1 custom-scrollbar">
+            <div className="pr-3">
+              <div className="grid grid-cols-2 gap-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="newFirst_name" className="text-slate-300">Imię *</Label>
+                  <Input
+                    id="newFirst_name"
+                    value={newClient.first_name}
+                    onChange={(e) => handleNewClientInputChange('first_name', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white"
+                    placeholder="Wprowadź imię"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="newLast_name" className="text-slate-300">Nazwisko *</Label>
+                  <Input
+                    id="newLast_name"
+                    value={newClient.last_name}
+                    onChange={(e) => handleNewClientInputChange('last_name', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white"
+                    placeholder="Wprowadź nazwisko"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="newCompany_name" className="text-slate-300">Firma *</Label>
+                  <Input
+                    id="newCompany_name"
+                    value={newClient.company_name}
+                    onChange={(e) => handleNewClientInputChange('company_name', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white"
+                    placeholder="Nazwa firmy"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="newNip" className="text-slate-300">NIP</Label>
+                  <Input
+                    id="newNip"
+                    value={newClient.nip}
+                    onChange={(e) => handleNewClientInputChange('nip', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white"
+                    placeholder="0000000000"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="newPhone" className="text-slate-300">Telefon</Label>
+                  <Input
+                    id="newPhone"
+                    value={newClient.phone}
+                    onChange={(e) => handleNewClientInputChange('phone', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white"
+                    placeholder="+48 000 000 000"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="newEmail" className="text-slate-300">Email</Label>
+                  <Input
+                    id="newEmail"
+                    value={newClient.email}
+                    onChange={(e) => handleNewClientInputChange('email', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white"
+                    placeholder="email@firma.pl"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="newWebsite" className="text-slate-300">Strona WWW</Label>
+                  <Input
+                    id="newWebsite"
+                    value={newClient.website}
+                    onChange={(e) => handleNewClientInputChange('website', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white"
+                    placeholder="www.firma.pl"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="newStatus" className="text-slate-300">Status</Label>
+                  <Select 
+                    value={newClient.status} 
+                    onValueChange={(value) => handleNewClientInputChange('status', value)}
+                  >
+                    <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-700 border-slate-600">
+                      {statusOptions.map((status) => (
+                        <SelectItem key={status} value={status} className="text-white hover:bg-slate-600">
+                          {status}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div className="col-span-2 space-y-2">
+                  <Label htmlFor="newNotes" className="text-slate-300">Notatka</Label>
+                  <Textarea
+                    id="newNotes"
+                    value={newClient.notes}
+                    onChange={(e) => handleNewClientInputChange('notes', e.target.value)}
+                    className="bg-slate-700 border-slate-600 text-white min-h-[100px]"
+                    placeholder="Dodaj notatki o kliencie..."
+                  />
+                </div>
+
+                {/* Sekcja przypomnienia dla nowego klienta */}
+                <div className="col-span-2 space-y-4 border-t border-slate-600 pt-4">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="newReminderEnabled"
+                      checked={newClient.reminder.enabled}
+                      onCheckedChange={(checked) => handleNewClientReminderChange('enabled', checked)}
+                      className="border-slate-600"
+                    />
+                    <Label htmlFor="newReminderEnabled" className="text-slate-300 flex items-center gap-2">
+                      <Clock className="h-4 w-4" />
+                      Ustaw przypomnienie
+                    </Label>
+                  </div>
+
+                  {newClient.reminder.enabled && (
+                    <div className="grid grid-cols-2 gap-4 ml-6">
+                      <div className="space-y-2">
+                        <Label htmlFor="newReminderDate" className="text-slate-300">Data</Label>
+                        <Input
+                          id="newReminderDate"
+                          type="date"
+                          value={newClient.reminder.date}
+                          onChange={(e) => handleNewClientReminderChange('date', e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white"
+                        />
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <Label htmlFor="newReminderTime" className="text-slate-300">Godzina</Label>
+                        <Input
+                          id="newReminderTime"
+                          type="time"
+                          value={newClient.reminder.time}
+                          onChange={(e) => handleNewClientReminderChange('time', e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white"
+                        />
+                      </div>
+                      
+                      <div className="col-span-2 space-y-2">
+                        <Label htmlFor="newReminderNote" className="text-slate-300">Notatka przypomnienia</Label>
+                        <Input
+                          id="newReminderNote"
+                          value={newClient.reminder.note}
+                          onChange={(e) => handleNewClientReminderChange('note', e.target.value)}
+                          className="bg-slate-700 border-slate-600 text-white"
+                          placeholder="O czym przypomnieć?"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-            
-            <div className="flex justify-end gap-2 pt-4">
+          </div>
+          
+          <div className="flex-shrink-0 border-t border-slate-600 pt-4">
+            <div className="flex justify-end gap-2">
               <Button
                 variant="outline"
-                onClick={handleCancelUpload}
+                onClick={handleCancelAdd}
                 className="border-slate-600 text-slate-300 hover:bg-slate-700"
               >
                 Anuluj
               </Button>
               <Button
-                onClick={handleFileUpload}
-                className="bg-blue-500 hover:bg-blue-600 text-white"
+                onClick={handleSaveNewClient}
+                disabled={!newClient.first_name || !newClient.last_name || !newClient.company_name || savingNewClient}
+                className="bg-green-500 hover:bg-green-600 text-white disabled:opacity-50"
               >
-                <Upload className="h-4 w-4 mr-2" />
-                Wgraj plik
+                {savingNewClient ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Dodaję...
+                  </>
+                ) : (
+                  <>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Dodaj klienta
+                  </>
+                )}
               </Button>
             </div>
-          </DialogContent>
-        </Dialog>
+          </div>
+        </DialogContent>
+      </Dialog>
 
-        <ClientDetailsPopup
-          isOpen={isDetailsPopupOpen}
-          onClose={handleCloseDetailsPopup}
-          client={selectedClientForDetails}
-        />
+      {/* Dialog do wgrywania plików */}
+      <Dialog open={isUploadDialogOpen} onOpenChange={setIsUploadDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Upload className="h-5 w-5" />
+              Wgraj plik z klientami
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="py-6">
+            <div className="border-2 border-dashed border-slate-600 rounded-lg p-8 text-center">
+              <FileSpreadsheet className="h-12 w-12 text-slate-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-white mb-2">Przeciągnij plik tutaj</h3>
+              <p className="text-slate-400 mb-4">lub kliknij aby wybrać plik</p>
+              <Button 
+                variant="outline" 
+                className="border-slate-600 text-slate-300 hover:bg-slate-700"
+              >
+                Wybierz plik
+              </Button>
+            </div>
+            
+            <div className="mt-4 text-sm text-slate-400">
+              <p className="mb-2">Obsługiwane formaty:</p>
+              <ul className="list-disc list-inside space-y-1">
+                <li>Excel (.xlsx, .xls)</li>
+                <li>CSV (.csv)</li>
+                <li>JSON (.json)</li>
+              </ul>
+            </div>
+            
+            <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+              <p className="text-blue-400 text-sm">
+                💡 Upewnij się, że plik zawiera kolumny: Imię, Nazwisko, Firma, NIP, Telefon, Email
+              </p>
+            </div>
+          </div>
+          
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="outline"
+              onClick={handleCancelUpload}
+              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+            >
+              Anuluj
+            </Button>
+            <Button
+              onClick={handleFileUpload}
+              className="bg-blue-500 hover:bg-blue-600 text-white"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Wgraj plik
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <ClientDetailsPopup
+        isOpen={isDetailsPopupOpen}
+        onClose={handleCloseDetailsPopup}
+        client={selectedClientForDetails}
+      />
     </div>
   )
 } 

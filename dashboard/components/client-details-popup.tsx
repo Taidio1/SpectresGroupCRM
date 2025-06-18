@@ -73,8 +73,8 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl">
-        <DialogHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+      <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogHeader className="flex flex-row items-center justify-between space-y-0 pb-4 flex-shrink-0">
           <DialogTitle className="text-xl font-semibold text-white flex items-center gap-3">
             <div className="flex items-center gap-3">
               <Avatar className="h-12 w-12">
@@ -107,7 +107,8 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
           </Button>
         </DialogHeader>
 
-        <div className="space-y-6">
+        {/* Przewijalna zawartość */}
+        <div className="flex-1 overflow-y-auto space-y-6 pr-2">
           {/* Status i podstawowe info */}
           <div className="flex items-center justify-between">
             <Badge 
@@ -266,7 +267,7 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
         </div>
 
         {/* Akcje */}
-        <div className="flex justify-between items-center pt-4 border-t border-slate-700">
+        <div className="flex justify-between items-center pt-4 border-t border-slate-700 flex-shrink-0">
           <div className="flex gap-2">
             <Button
               onClick={() => handlePhoneClick(client.phone)}

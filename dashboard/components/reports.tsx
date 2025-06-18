@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   BarChart3,
   Bell,
@@ -17,6 +17,14 @@ import {
   Filter,
   TrendingUp,
   TrendingDown,
+  CheckCircle,
+  XCircle,
+  Clock,
+  Target,
+  Award,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -27,6 +35,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts"
+import { Progress } from "@/components/ui/progress"
 
 // Dane do raportów
 const dailyStats = {
@@ -80,10 +89,204 @@ const weeklyTrendData = [
   { day: 'Nd', klienci: 12, rozmowy: 19, konwersja: 48 },
 ]
 
+// Dane statystyk pracowników
+const employeeStatsData = [
+  {
+    id: 1,
+    name: "Jan Kowalski",
+    email: "jan.kowalski@firma.pl",
+    role: "pracownik",
+    avatar: "/avatars/jan.jpg",
+    phoneCallsTotal: 145,
+    phoneCallsToday: 23,
+    statusChanges: {
+      canvas: 45,
+      sale: 28,
+      antysale: 15,
+      brak_kontaktu: 32,
+      nie_zainteresowany: 18,
+      zdenerwowany: 7
+    },
+    conversionRate: 68.2,
+    avgCallDuration: "8:42",
+    clientsAssigned: 89,
+    clientsActive: 45,
+    efficiency: 85,
+    lastActive: "2024-01-15 14:30"
+  },
+  {
+    id: 2,
+    name: "Anna Nowak",
+    email: "anna.nowak@firma.pl",
+    role: "pracownik",
+    avatar: "/avatars/anna.jpg",
+    phoneCallsTotal: 189,
+    phoneCallsToday: 31,
+    statusChanges: {
+      canvas: 52,
+      sale: 38,
+      antysale: 12,
+      brak_kontaktu: 45,
+      nie_zainteresowany: 25,
+      zdenerwowany: 17
+    },
+    conversionRate: 74.5,
+    avgCallDuration: "9:15",
+    clientsAssigned: 112,
+    clientsActive: 67,
+    efficiency: 92,
+    lastActive: "2024-01-15 15:45"
+  },
+  {
+    id: 3,
+    name: "Piotr Zieliński",
+    email: "piotr.zielinski@firma.pl",
+    role: "pracownik",
+    avatar: "/avatars/piotr.jpg",
+    phoneCallsTotal: 167,
+    phoneCallsToday: 28,
+    statusChanges: {
+      canvas: 48,
+      sale: 32,
+      antysale: 18,
+      brak_kontaktu: 38,
+      nie_zainteresowany: 22,
+      zdenerwowany: 9
+    },
+    conversionRate: 65.8,
+    avgCallDuration: "7:58",
+    clientsAssigned: 95,
+    clientsActive: 52,
+    efficiency: 78,
+    lastActive: "2024-01-15 13:20"
+  },
+  {
+    id: 4,
+    name: "Maria Wiśniewska",
+    email: "maria.wisniewska@firma.pl",
+    role: "pracownik",
+    avatar: "/avatars/maria.jpg",
+    phoneCallsTotal: 203,
+    phoneCallsToday: 35,
+    statusChanges: {
+      canvas: 58,
+      sale: 42,
+      antysale: 21,
+      brak_kontaktu: 48,
+      nie_zainteresowany: 28,
+      zdenerwowany: 6
+    },
+    conversionRate: 79.3,
+    avgCallDuration: "10:22",
+    clientsAssigned: 128,
+    clientsActive: 78,
+    efficiency: 94,
+    lastActive: "2024-01-15 16:10"
+  },
+  {
+    id: 5,
+    name: "Tomasz Kaczmarek",
+    email: "tomasz.kaczmarek@firma.pl",
+    role: "pracownik",
+    avatar: "/avatars/tomasz.jpg",
+    phoneCallsTotal: 134,
+    phoneCallsToday: 19,
+    statusChanges: {
+      canvas: 38,
+      sale: 22,
+      antysale: 25,
+      brak_kontaktu: 35,
+      nie_zainteresowany: 12,
+      zdenerwowany: 2
+    },
+    conversionRate: 58.7,
+    avgCallDuration: "6:45",
+    clientsAssigned: 76,
+    clientsActive: 38,
+    efficiency: 72,
+    lastActive: "2024-01-15 12:15"
+  }
+]
+
+const statusColors = {
+  canvas: 'bg-blue-500/20 text-blue-400',
+  sale: 'bg-green-500/20 text-green-400',
+  antysale: 'bg-orange-500/20 text-orange-400',
+  brak_kontaktu: 'bg-gray-500/20 text-gray-400',
+  nie_zainteresowany: 'bg-red-500/20 text-red-400',
+  zdenerwowany: 'bg-red-600/20 text-red-300'
+}
+
 export function Reports() {
+  const [employees, setEmployees] = useState(employeeStatsData)
+  const [filteredEmployees, setFilteredEmployees] = useState(employeeStatsData)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortField, setSortField] = useState<string>('name')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
   const [selectedPeriod, setSelectedPeriod] = useState('today')
-  const [selectedEmployee, setSelectedEmployee] = useState('all')
   const today = new Date().toLocaleDateString('pl-PL')
+
+  // Funkcja filtrowania
+  useEffect(() => {
+    let filtered = employees
+    
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase()
+      filtered = filtered.filter(emp =>
+        emp.name.toLowerCase().includes(query) ||
+        emp.email.toLowerCase().includes(query)
+      )
+    }
+
+    // Sortowanie
+    filtered = [...filtered].sort((a, b) => {
+      let aValue: any = a[sortField as keyof typeof a]
+      let bValue: any = b[sortField as keyof typeof b]
+
+      if (sortField === 'totalStatusChanges') {
+        aValue = Object.values(a.statusChanges).reduce((sum, val) => sum + val, 0)
+        bValue = Object.values(b.statusChanges).reduce((sum, val) => sum + val, 0)
+      }
+
+      if (typeof aValue === 'string') {
+        aValue = aValue.toLowerCase()
+        bValue = bValue.toLowerCase()
+      }
+
+      if (sortDirection === 'asc') {
+        return aValue > bValue ? 1 : -1
+      } else {
+        return aValue < bValue ? 1 : -1
+      }
+    })
+
+    setFilteredEmployees(filtered)
+  }, [employees, searchQuery, sortField, sortDirection])
+
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDirection('asc')
+    }
+  }
+
+  const getSortIcon = (field: string) => {
+    if (sortField !== field) return <ArrowUpDown className="h-4 w-4" />
+    return sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+  }
+
+  const getEfficiencyBadge = (efficiency: number) => {
+    if (efficiency >= 90) return 'bg-green-500/20 text-green-400'
+    if (efficiency >= 80) return 'bg-blue-500/20 text-blue-400'
+    if (efficiency >= 70) return 'bg-yellow-500/20 text-yellow-400'
+    return 'bg-red-500/20 text-red-400'
+  }
+
+  const getTotalStatusChanges = (statusChanges: any) => {
+    return Object.values(statusChanges).reduce((sum: number, val: any) => sum + val, 0)
+  }
 
   const handleExportPDF = () => {
     alert('Eksport do PDF - funkcjonalność w przygotowaniu')

@@ -1,4 +1,4 @@
-// File: E:\SpectresGroupCRM\dashboard\app\clients\page.tsx
+// File: C:\Users\kkacp\Desktop\SpectresGroupCRM\dashboard\app\clients\page.tsx
 import * as entry from '../../../../app/clients/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
