@@ -88,13 +88,8 @@ export function GeneralReports() {
     <div className="w-full h-full">
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Raport - Ogólne Statystyki</h1>
-          <p className="text-slate-400">Podsumowanie wydajności wszystkich pracowników - {today}</p>
-        </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-slate-400" />
             <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
               <SelectTrigger className="w-32 bg-slate-800 border-slate-700">
                 <SelectValue />

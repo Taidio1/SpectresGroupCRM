@@ -33,6 +33,293 @@ export const getAvatarUrl = (avatarUrl?: string | null): string | null => {
   return null
 }
 
+// Storage API dla plików CSV
+export const storageApi = {
+  // Upload pliku CSV do bucket
+  async uploadCSV(file: File, user: User): Promise<string> {
+    try {
+      const fileName = `${user.id}_${Date.now()}_${file.name}`
+      const filePath = `csv-imports/${fileName}`
+      
+      console.log(`📁 Uploading CSV: ${filePath}`)
+      
+      const { data, error } = await supabase.storage
+        .from('csv-files')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false
+        })
+      
+      if (error) {
+        console.error('❌ Storage upload error:', error)
+        throw new Error(`Błąd uploadu: ${error.message}`)
+      }
+      
+      console.log('✅ File uploaded successfully:', data.path)
+      return data.path
+      
+    } catch (error) {
+      console.error('❌ Upload failed:', error)
+      throw error
+    }
+  },
+  
+  // Pobierz publiczny URL pliku
+  getPublicUrl(path: string): string {
+    const { data } = supabase.storage
+      .from('csv-files')
+      .getPublicUrl(path)
+    
+    return data.publicUrl
+  },
+  
+  // Usuń plik z bucket
+  async deleteFile(path: string): Promise<void> {
+    const { error } = await supabase.storage
+      .from('csv-files')
+      .remove([path])
+    
+    if (error) {
+      console.error('❌ File deletion error:', error)
+      throw new Error(`Błąd usuwania pliku: ${error.message}`)
+    }
+  }
+}
+
+// CSV Import API
+export const csvImportApi = {
+  // Parsuj CSV i zwróć dane
+  parseCSV(csvText: string): { headers: string[], rows: string[][] } {
+    const lines = csvText.split('\n').filter(line => line.trim() !== '')
+    
+    if (lines.length < 2) {
+      throw new Error('Plik CSV jest pusty lub zawiera tylko nagłówki')
+    }
+    
+    // Parsowanie z obsługą cudzysłowów
+    const parseCSVLine = (line: string): string[] => {
+      const result: string[] = []
+      let current = ''
+      let inQuotes = false
+      
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i]
+        
+        if (char === '"') {
+          inQuotes = !inQuotes
+        } else if (char === ',' && !inQuotes) {
+          result.push(current.trim())
+          current = ''
+        } else {
+          current += char
+        }
+      }
+      
+      result.push(current.trim())
+      return result.map(cell => cell.replace(/^"|"$/g, '')) // Usuń cudzysłowy
+    }
+    
+    const headers = parseCSVLine(lines[0])
+    const rows = lines.slice(1).map(parseCSVLine)
+    
+    return { headers, rows }
+  },
+  
+  // Mapuj nagłówki CSV na pola bazy danych
+  mapHeaders(headers: string[]): Record<string, number> {
+    const mapping: Record<string, number> = {}
+    
+    const fieldMappings = [
+      { fields: ['first_name', 'imię', 'name', 'firstName'], dbField: 'first_name' },
+      { fields: ['last_name', 'nazwisko', 'surname', 'lastName'], dbField: 'last_name' },
+      { fields: ['company_name', 'firma', 'company', 'companyName', 'nazwa'], dbField: 'company_name' },
+      { fields: ['nip', 'tax_id', 'taxId'], dbField: 'nip' },
+      { fields: ['phone', 'telefon', 'telephone'], dbField: 'phone' },
+      { fields: ['email', 'e-mail', 'mail'], dbField: 'email' },
+      { fields: ['website', 'www', 'strona', 'url'], dbField: 'website' },
+      { fields: ['notes', 'notatka', 'note', 'comment'], dbField: 'notes' },
+      { fields: ['status'], dbField: 'status' }
+    ]
+    
+    for (const fieldMapping of fieldMappings) {
+      for (let i = 0; i < headers.length; i++) {
+        const header = headers[i].toLowerCase().trim()
+        if (fieldMapping.fields.some(field => header.includes(field))) {
+          mapping[fieldMapping.dbField] = i
+          break
+        }
+      }
+    }
+    
+    return mapping
+  },
+  
+  // Waliduj wymagane pola
+  validateRequiredFields(mapping: Record<string, number>): void {
+    const requiredFields = ['company_name']
+    const missingFields = requiredFields.filter(field => !(field in mapping))
+    
+    if (missingFields.length > 0) {
+      throw new Error(`Brak wymaganych kolumn: ${missingFields.join(', ')}. Wymagane: Firma/Nazwa`)
+    }
+  },
+  
+  // Sprawdź dostępne kolumny i pokaż informacje
+  analyzeColumns(mapping: Record<string, number>, headers: string[]): { found: string[], missing: string[], optional: string[] } {
+    const allPossibleFields = [
+      { field: 'first_name', displayName: 'Imię', required: false },
+      { field: 'last_name', displayName: 'Nazwisko', required: false },
+      { field: 'company_name', displayName: 'Firma/Nazwa', required: true },
+      { field: 'phone', displayName: 'Telefon', required: false },
+      { field: 'email', displayName: 'Email', required: false },
+      { field: 'nip', displayName: 'NIP', required: false },
+      { field: 'website', displayName: 'Strona WWW', required: false },
+      { field: 'notes', displayName: 'Notatki', required: false },
+      { field: 'status', displayName: 'Status', required: false }
+    ]
+    
+    const found: string[] = []
+    const missing: string[] = []
+    const optional: string[] = []
+    
+    allPossibleFields.forEach(({ field, displayName, required }) => {
+      if (field in mapping) {
+        found.push(displayName)
+      } else if (required) {
+        missing.push(displayName)
+      } else {
+        optional.push(displayName)
+      }
+    })
+    
+    return { found, missing, optional }
+  },
+  
+  // Przekształć wiersz CSV na obiekt klienta
+  rowToClient(row: string[], mapping: Record<string, number>, user: User): Omit<Client, 'id' | 'created_at' | 'updated_at'> {
+    const getField = (field: string, defaultValue: string = 'brak informacji'): string => {
+      const index = mapping[field]
+      if (index === undefined) {
+        return defaultValue
+      }
+      const value = (row[index] || '').trim()
+      return value === '' ? defaultValue : value
+    }
+    
+    // Walidacja statusu
+    const rawStatus = getField('status', 'canvas').toLowerCase()
+    const validStatuses = ['canvas', 'brak_kontaktu', 'nie_zainteresowany', 'zdenerwowany', 'antysale', 'sale', '$$'] as const
+    const status = validStatuses.includes(rawStatus as any) ? rawStatus as Client['status'] : 'canvas'
+    
+    return {
+      first_name: getField('first_name'), // Opcjonalne - może być "brak informacji"
+      last_name: getField('last_name'), // Opcjonalne - może być "brak informacji"
+      company_name: getField('company_name', ''), // Wymagane - nie może być "brak informacji"
+      nip: getField('nip'),
+      phone: getField('phone'),
+      email: getField('email'),
+      website: getField('website'),
+      notes: getField('notes'),
+      status,
+      edited_by: user.id,
+      edited_at: new Date().toISOString(),
+      owner_id: user.id,
+      last_edited_by_name: user.full_name, // Zapisz dane importera
+      last_edited_by_avatar_url: user.avatar_url
+    }
+  },
+  
+  // Import pełnego CSV do bazy danych
+  async importCSV(file: File, user: User, onProgress?: (progress: { current: number, total: number, status: string }) => void): Promise<{ success: number, errors: any[] }> {
+    try {
+      onProgress?.({ current: 0, total: 100, status: 'Uploading pliku...' })
+      
+      // 1. Upload pliku do Storage
+      const filePath = await storageApi.uploadCSV(file, user)
+      
+      onProgress?.({ current: 20, total: 100, status: 'Parsowanie CSV...' })
+      
+      // 2. Czytanie i parsowanie CSV
+      const csvText = await file.text()
+      const { headers, rows } = csvImportApi.parseCSV(csvText)
+      
+      onProgress?.({ current: 40, total: 100, status: 'Mapowanie kolumn...' })
+      
+      // 3. Mapowanie nagłówków
+      const mapping = csvImportApi.mapHeaders(headers)
+      csvImportApi.validateRequiredFields(mapping)
+      
+      // 4. Analiza dostępnych kolumn
+      const columnAnalysis = csvImportApi.analyzeColumns(mapping, headers)
+      
+      console.log('📊 CSV Headers:', headers)
+      console.log('📊 Field mapping:', mapping)
+      console.log('📊 Rows to import:', rows.length)
+      console.log('✅ Znalezione kolumny:', columnAnalysis.found)
+      console.log('❌ Brakujące wymagane:', columnAnalysis.missing)
+      console.log('⚪ Opcjonalne (będą "brak informacji"):', columnAnalysis.optional)
+      
+      onProgress?.({ current: 50, total: 100, status: `Importowanie ${rows.length} klientów...` })
+      
+      // 4. Import wierszy do bazy
+      const results = { success: 0, errors: [] as any[] }
+      
+      for (let i = 0; i < rows.length; i++) {
+        try {
+          const row = rows[i]
+          
+          // Sprawdź czy wiersz nie jest pusty
+          if (row.every(cell => cell.trim() === '')) {
+            continue
+          }
+          
+          const clientData = csvImportApi.rowToClient(row, mapping, user)
+          
+          // Walidacja podstawowych danych
+          if (!clientData.company_name || clientData.company_name.trim() === '') {
+            results.errors.push({
+              row: i + 2, // +2 bo liczymy od 1 i pomijamy nagłówek
+              error: 'Brak wymaganych danych: firma/nazwa',
+              data: row
+            })
+            continue
+          }
+          
+          // Dodaj klienta do bazy
+          await clientsApi.createClient(clientData, user)
+          results.success++
+          
+          // Aktualizuj progress
+          const progress = 50 + Math.floor((i / rows.length) * 40)
+          onProgress?.({ current: progress, total: 100, status: `Zaimportowano ${results.success}/${rows.length} klientów` })
+          
+        } catch (error) {
+          console.error(`❌ Błąd importu wiersza ${i + 2}:`, error)
+          results.errors.push({
+            row: i + 2,
+            error: error instanceof Error ? error.message : 'Nieznany błąd',
+            data: rows[i]
+          })
+        }
+      }
+      
+      onProgress?.({ current: 95, total: 100, status: 'Finalizowanie...' })
+      
+      // 5. Opcjonalnie usuń plik z Storage (lub zachowaj dla historii)
+      // await storageApi.deleteFile(filePath)
+      
+      onProgress?.({ current: 100, total: 100, status: 'Zakończono!' })
+      
+      console.log(`✅ Import zakończony: ${results.success} sukces, ${results.errors.length} błędów`)
+      return results
+      
+    } catch (error) {
+      console.error('❌ CSV Import failed:', error)
+      throw error
+    }
+  }
+}
+
 // Typy dla bazy danych zgodnie z ETAPEM 5 i 6 z README + StrukturaDB.txt
 export interface Client {
   id: string
@@ -51,12 +338,20 @@ export interface Client {
   created_at: string
   updated_at: string
   status_changed_at?: string // Czas ostatniej zmiany statusu
+  last_edited_by_name?: string // Pełne imię i nazwisko ostatniego edytora
+  last_edited_by_avatar_url?: string // Avatar URL ostatniego edytora
   owner?: {
     id: string
     full_name: string
     email: string
     avatar_url?: string
   } // Informacje o właścicielu klienta
+  reminder?: {
+    enabled: boolean
+    date: string
+    time: string
+    note: string
+  } // Przypomnienie dla klienta
 }
 
 export interface ActivityLog {
@@ -141,6 +436,27 @@ export const permissionsApi = {
   // Sprawdź czy użytkownik może dostęp do zaawansowanych raportów
   canAccessAdvancedReports: (user: User): boolean => {
     return ['manager', 'szef', 'admin'].includes(user.role)
+  }
+}
+
+// Interfejs dla slotu czasowego w planie dnia
+export interface DailyScheduleSlot {
+  time: string
+  type: string
+  color: string
+  startTime: string
+  endTime: string
+  statuses: string[]
+  clients: ClientWithReminder[]
+}
+
+// Interfejs dla klienta z przypomnieniam
+export interface ClientWithReminder extends Client {
+  reminder?: {
+    enabled: boolean
+    date: string
+    time: string
+    note: string
   }
 }
 
@@ -250,7 +566,9 @@ export const clientsApi = {
       ...client,
       status: safeStatus, // Użyj bezpiecznego statusu
       owner_id: user.id, // Automatycznie przypisz właściciela
-      edited_by: user.id
+      edited_by: user.id,
+      last_edited_by_name: user.full_name, // Zapisz dane twórcy
+      last_edited_by_avatar_url: user.avatar_url
     }
 
     console.log('📊 Tworzenie klienta z danymi:', clientToCreate)
@@ -312,6 +630,11 @@ export const clientsApi = {
       // Zawsze przypisz edytującego jako właściciela
       updatedData.owner_id = user.id
       console.log(`🎯 Przypisuję klienta ${id} do użytkownika ${user.id} (${user.email}) jako właściciela`)
+      
+      // Zapisz informacje o edytorze (szczególnie ważne dla pracowników)
+      updatedData.last_edited_by_name = user.full_name
+      updatedData.last_edited_by_avatar_url = user.avatar_url
+      console.log(`👤 Zapisuję dane edytora: ${user.full_name} (rola: ${user.role})`)
       
       // Jeśli to pracownik i zmienia status - dodatkowy log
       if (user.role === 'pracownik' && statusChanged) {
@@ -474,6 +797,44 @@ export const clientsApi = {
     }
   },
 
+  // Automatyczne przypisanie klienta do użytkownika otwierającego edytor
+  async claimClientForEditing(clientId: string, userId: string) {
+    try {
+      console.log(`🎯 Przypisuję klienta ${clientId} do użytkownika ${userId} do edycji`)
+      
+      const { data, error } = await supabase
+        .from('clients')
+        .update({
+          owner_id: userId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', clientId)
+        .select(`
+          *,
+          owner:users!owner_id (
+            id,
+            full_name,
+            email,
+            avatar_url,
+            role
+          )
+        `)
+        .single()
+      
+      if (error) {
+        console.error('❌ Błąd claimClientForEditing:', error)
+        throw error
+      }
+      
+      console.log('✅ Klient przypisany do edycji:', data)
+      return data as Client
+      
+    } catch (error) {
+      console.error('❌ Błąd w claimClientForEditing:', error)
+      throw error
+    }
+  },
+
   // Subskrypcja na zmiany w czasie rzeczywistym
   subscribeToChanges(callback: (payload: any) => void) {
     return supabase
@@ -483,6 +844,210 @@ export const clientsApi = {
         callback
       )
       .subscribe()
+  },
+
+  // Subskrypcja na zmiany owner_id dla real-time aktualizacji
+  subscribeToOwnerChanges(callback: (payload: any) => void) {
+    try {
+      // Sprawdź czy callback jest funkcją
+      if (typeof callback !== 'function') {
+        console.error('❌ Callback nie jest funkcją w subscribeToOwnerChanges')
+        throw new Error('Callback musi być funkcją')
+      }
+
+      console.log('📡 Tworzę kanał Supabase dla owner changes...')
+      
+      // Najpierw sprawdź czy real-time jest włączony i dostępny
+      const channelName = `clients_owner_changes_${Date.now()}`
+      console.log('📡 Nazwa kanału:', channelName)
+      
+      const channel = supabase
+        .channel(channelName)
+        .on('postgres_changes', 
+          { 
+            event: 'UPDATE', 
+            schema: 'public', 
+            table: 'clients',
+            filter: 'owner_id=neq.null' // Tylko gdy owner_id się zmienia
+          }, 
+          (payload) => {
+            try {
+              console.log('📡 Real-time payload otrzymany:', {
+                eventType: payload.eventType,
+                table: payload.table,
+                changes: payload.new ? {
+                  id: payload.new.id,
+                  owner_id: payload.new.owner_id,
+                  first_name: payload.new.first_name,
+                  last_name: payload.new.last_name
+                } : 'brak danych'
+              })
+              
+              if (typeof callback === 'function') {
+                callback(payload)
+              } else {
+                console.error('❌ Callback nie jest funkcją podczas wywołania')
+              }
+            } catch (callbackError) {
+              console.error('❌ Błąd w callback:', callbackError)
+            }
+          }
+        )
+        .subscribe((status, err) => {
+          console.log('📡 Subskrypcja owner_changes status:', status)
+          
+          if (status === 'SUBSCRIBED') {
+            console.log('✅ Subskrypcja owner_changes aktywna')
+          } else if (status === 'CLOSED') {
+            console.warn('⚠️ Subskrypcja owner_changes zamknięta - prawdopodobnie problem z autoryzacją real-time')
+            console.warn('💡 Real-time może być wyłączony w ustawieniach Supabase lub brakuje uprawnień')
+          } else if (status === 'CHANNEL_ERROR') {
+            console.error('❌ Błąd kanału real-time:', err)
+            console.error('💡 Sprawdź ustawienia real-time w Supabase Dashboard')
+          } else if (status === 'TIMED_OUT') {
+            console.warn('⏰ Timeout subskrypcji - problemy z połączeniem WebSocket')
+          } else {
+            console.log('📡 Status subskrypcji:', status)
+          }
+        })
+      
+      // Sprawdź stan kanału po krótkim czasie
+      setTimeout(() => {
+        if (channel.state === 'closed') {
+          console.warn('⚠️ Kanał real-time został zamknięty - prawdopodobnie RLS blokuje real-time lub feature jest wyłączony')
+        }
+      }, 2000)
+      
+      console.log('✅ Kanał owner changes utworzony')
+      return channel
+      
+    } catch (error) {
+      console.error('❌ Błąd w subscribeToOwnerChanges:', error)
+      console.warn('💡 Real-time nie będzie działać - aplikacja będzie używać okresowego odświeżania')
+      
+      // Zwróć mock object aby nie powodować błędów
+      return {
+        unsubscribe: () => {
+          console.log('🧹 Mock unsubscribe dla błędnego kanału')
+        }
+      }
+    }
+  },
+
+  // Pobierz klientów z przypomnieniami na konkretny dzień
+  async getClientsWithReminders(user: User, targetDate?: string): Promise<ClientWithReminder[]> {
+    try {
+      const today = targetDate || new Date().toISOString().split('T')[0] // format YYYY-MM-DD
+      
+      console.log(`📅 Pobieranie klientów z przypomnieniami na: ${today}`)
+
+      // Pobierz wszystkich klientów użytkownika
+      const allClients = await this.getClients(user)
+
+      // Filtruj tylko tych z przypomnieniami na dziś
+      const clientsWithTodayReminders = allClients.filter(client => {
+        // Sprawdź czy klient ma aktywne przypomnienie
+        const reminder = client.reminder || {
+          enabled: false,
+          date: '',
+          time: '',
+          note: ''
+        }
+
+        return reminder.enabled && reminder.date === today
+      })
+
+      // Sortuj według godziny przypomnienia
+      const sortedClients = clientsWithTodayReminders.sort((a, b) => {
+        const timeA = a.reminder?.time || '00:00'
+        const timeB = b.reminder?.time || '00:00'
+        return timeA.localeCompare(timeB)
+      })
+
+      console.log(`✅ Znaleziono ${sortedClients.length} klientów z przypomnieniami na ${today}`)
+      
+      return sortedClients
+    } catch (error) {
+      console.error('❌ Błąd pobierania klientów z przypomnieniami:', error)
+      throw error
+    }
+  },
+
+  // Pobierz przypomnienia pogrupowane według slotów czasowych dla dashboardu
+  async getDailyScheduleWithClients(user: User, targetDate?: string): Promise<DailyScheduleSlot[]> {
+    try {
+      const clientsWithReminders = await this.getClientsWithReminders(user, targetDate)
+      
+      // Definicja slotów czasowych (zgodnie z obecną strukturą dashboardu)
+      const timeSlots = [
+        { 
+          time: '8:00 - 10:00', 
+          type: 'canvas', 
+          color: '#06b6d4',
+          startTime: '08:00',
+          endTime: '10:00',
+          statuses: ['canvas']
+        },
+        { 
+          time: '10:10 - 12:00', 
+          type: 'sales', 
+          color: '#10b981',
+          startTime: '10:10',
+          endTime: '12:00',
+          statuses: ['sale']
+        },
+        { 
+          time: '12:30 - 15:00', 
+          type: 'antysales', 
+          color: '#f59e0b',
+          startTime: '12:30',
+          endTime: '15:00',
+          statuses: ['antysale']
+        },
+        { 
+          time: '15:10 - 16:30', 
+          type: 'canvas + sales', 
+          color: '#8b5cf6',
+          startTime: '15:10',
+          endTime: '16:30',
+          statuses: ['canvas', 'sale']
+        },
+      ]
+
+      // Przypisz klientów do odpowiednich slotów
+      const slotsWithClients = timeSlots.map(slot => {
+        const slotClients = clientsWithReminders.filter(client => {
+          const reminderTime = client.reminder?.time || '00:00'
+          const [hours, minutes] = reminderTime.split(':').map(Number)
+          const reminderMinutes = hours * 60 + minutes
+
+          const [startHours, startMins] = slot.startTime.split(':').map(Number)
+          const [endHours, endMins] = slot.endTime.split(':').map(Number)
+          const startMinutes = startHours * 60 + startMins
+          const endMinutes = endHours * 60 + endMins
+
+          // Sprawdź czy godzina przypomnienia mieści się w slocie
+          const timeInSlot = reminderMinutes >= startMinutes && reminderMinutes <= endMinutes
+          
+          // Sprawdź czy status klienta pasuje do typu slotu
+          const statusMatches = slot.statuses.includes(client.status)
+
+          return timeInSlot && statusMatches
+        })
+
+        return {
+          ...slot,
+          clients: slotClients
+        }
+      })
+
+      console.log(`📊 Plan dnia z ${slotsWithClients.reduce((sum, slot) => sum + slot.clients.length, 0)} klientami`)
+      
+      return slotsWithClients
+    } catch (error) {
+      console.error('❌ Błąd tworzenia planu dnia:', error)
+      throw error
+    }
   }
 }
 
@@ -679,8 +1244,199 @@ export const activityLogsApi = {
   }
 }
 
+// Typy dla statystyk pracowników
+export interface EmployeeStats {
+  id: string
+  user_id: string
+  daily_target: number
+  commission_rate: number
+  monthly_canvas: number
+  monthly_antysale: number
+  monthly_sale: number
+  total_commissions: number
+  total_penalties: number
+  // Pola do edycji ręcznej
+  custom_clients_count?: number
+  custom_total_payments?: number
+  // Dodatkowe dane z JOIN
+  user?: {
+    id: string
+    full_name: string
+    email: string
+    avatar_url?: string
+    role: string
+  }
+  // Obliczone na podstawie danych z clients
+  daily_achieved?: number
+  yesterday_shortage?: number
+  status_changes_today?: Record<string, number>
+}
+
 // Funkcje API dla raportów
 export const reportsApi = {
+  // Pobierz statystyki tylko pracowników z prowizją
+  async getEmployeeStats(user: User): Promise<EmployeeStats[]> {
+    try {
+      console.log('📊 Pobieranie statystyk pracowników...')
+      
+      // Pobierz podstawowe statystyki z tabeli employee_stats z JOIN do users - TYLKO PRACOWNICY
+      const { data: basicStats, error: statsError } = await supabase
+        .from('employee_stats')
+        .select(`
+          *,
+          user:users!user_id (
+            id,
+            full_name,
+            email,
+            avatar_url,
+            role
+          )
+        `)
+        .eq('user.role', 'pracownik') // Filtruj tylko pracowników
+        .order('created_at', { ascending: true })
+
+      if (statsError) {
+        console.error('❌ Błąd pobierania employee_stats:', statsError)
+        throw statsError
+      }
+
+      if (!basicStats || basicStats.length === 0) {
+        console.log('⚠️ Brak danych w tabeli employee_stats')
+        return []
+      }
+
+      console.log('✅ Pobrano podstawowe statystyki:', basicStats.length)
+
+      // Pobierz dzisiejsze statystyki z tabeli clients
+      const today = new Date().toISOString().split('T')[0]
+      const { data: todayClients, error: clientsError } = await supabase
+        .from('clients')
+        .select('status, edited_by, created_at, updated_at')
+        .gte('updated_at', `${today}T00:00:00`)
+        .lt('updated_at', `${today}T23:59:59`)
+
+      if (clientsError) {
+        console.error('❌ Błąd pobierania klientów z dzisiaj:', clientsError)
+        throw clientsError
+      }
+
+      console.log('✅ Pobrano dzisiejszych klientów:', todayClients?.length || 0)
+
+      // Pobierz wczorajsze statystyki dla kar
+      const yesterday = new Date()
+      yesterday.setDate(yesterday.getDate() - 1)
+      const yesterdayStr = yesterday.toISOString().split('T')[0]
+      
+      const { data: yesterdayClients, error: yesterdayError } = await supabase
+        .from('clients')
+        .select('status, edited_by')
+        .gte('updated_at', `${yesterdayStr}T00:00:00`)
+        .lt('updated_at', `${yesterdayStr}T23:59:59`)
+
+      if (yesterdayError) {
+        console.warn('⚠️ Błąd pobierania wczorajszych klientów:', yesterdayError)
+      }
+
+      // Pobierz miesięczne statystyki
+      const startOfMonth = new Date()
+      startOfMonth.setDate(1)
+      startOfMonth.setHours(0, 0, 0, 0)
+      
+      const { data: monthlyClients, error: monthlyError } = await supabase
+        .from('clients')
+        .select('status, edited_by')
+        .gte('updated_at', startOfMonth.toISOString())
+
+      if (monthlyError) {
+        console.warn('⚠️ Błąd pobierania miesięcznych klientów:', monthlyError)
+      }
+
+      // Agreguj dzisiejsze statystyki per pracownik
+      const todayStats = (todayClients || []).reduce((acc: Record<string, any>, client) => {
+        const userId = client.edited_by
+        if (!userId) return acc
+        
+        if (!acc[userId]) {
+          acc[userId] = { total: 0, canvas: 0, antysale: 0, sale: 0, other: 0 }
+        }
+        
+        acc[userId].total++
+        if (client.status === 'canvas') acc[userId].canvas++
+        else if (client.status === 'antysale') acc[userId].antysale++
+        else if (client.status === 'sale') acc[userId].sale++
+        else acc[userId].other++
+        
+        return acc
+      }, {})
+
+      // Agreguj wczorajsze statystyki per pracownik
+      const yesterdayStats = (yesterdayClients || []).reduce((acc: Record<string, number>, client) => {
+        const userId = client.edited_by
+        if (userId) {
+          acc[userId] = (acc[userId] || 0) + 1
+        }
+        return acc
+      }, {})
+
+      // Agreguj miesięczne statystyki per pracownik
+      const monthlyStats = (monthlyClients || []).reduce((acc: Record<string, any>, client) => {
+        const userId = client.edited_by
+        if (!userId) return acc
+        
+        if (!acc[userId]) {
+          acc[userId] = { canvas: 0, antysale: 0, sale: 0 }
+        }
+        
+        if (client.status === 'canvas') acc[userId].canvas++
+        else if (client.status === 'antysale') acc[userId].antysale++
+        else if (client.status === 'sale') acc[userId].sale++
+        
+        return acc
+      }, {})
+
+      // Kombinuj dane
+      const enhancedStats: EmployeeStats[] = basicStats.map(stat => {
+        const userId = stat.user_id
+        const todayForUser = todayStats[userId] || { total: 0, canvas: 0, antysale: 0, sale: 0 }
+        const yesterdayForUser = yesterdayStats[userId] || 0
+        const monthlyForUser = monthlyStats[userId] || { canvas: 0, antysale: 0, sale: 0 }
+        
+        // Oblicz karę za wczoraj
+        const yesterdayShortage = Math.max(0, stat.daily_target - yesterdayForUser)
+        const penalty = yesterdayShortage * 15 // 15 EUR za każdy brak
+
+        // Oblicz prowizję miesięczną
+        const totalMonthly = monthlyForUser.canvas + monthlyForUser.antysale + monthlyForUser.sale
+        const commission = (totalMonthly * stat.commission_rate / 100) * 100 // przykładowa kalkulacja
+
+        return {
+          ...stat,
+          daily_achieved: todayForUser.total,
+          yesterday_shortage: yesterdayShortage,
+          status_changes_today: {
+            canvas: todayForUser.canvas,
+            antysale: todayForUser.antysale,
+            sale: todayForUser.sale,
+            other: todayForUser.other
+          },
+          // Aktualizuj miesięczne dane z rzeczywistymi
+          monthly_canvas: monthlyForUser.canvas,
+          monthly_antysale: monthlyForUser.antysale,
+          monthly_sale: monthlyForUser.sale,
+          total_commissions: commission,
+          total_penalties: penalty
+        }
+      })
+
+      console.log('✅ Przygotowano rozszerzone statystyki:', enhancedStats.length)
+      return enhancedStats
+
+    } catch (error) {
+      console.error('❌ Błąd pobierania statystyk pracowników:', error)
+      throw error
+    }
+  },
+
   // Podsumowanie dnia
   async getDailySummary(date: string) {
     const { data, error } = await supabase
@@ -716,6 +1472,103 @@ export const reportsApi = {
       .select('status, edited_by, updated_at')
       .gte('updated_at', startDate)
       .lt('updated_at', endDate)
+
+    if (error) throw error
+    return data
+  },
+
+  // Aktualizuj statystyki pracownika (dla manager/szef/admin)
+  async updateEmployeeStats(userId: string, updates: Partial<EmployeeStats>, currentUser: User) {
+    // Sprawdź uprawnienia
+    if (!['manager', 'szef', 'admin'].includes(currentUser.role)) {
+      throw new Error('Brak uprawnień do modyfikacji statystyk')
+    }
+
+    const { data, error } = await supabase
+      .from('employee_stats')
+      .update(updates)
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (error) throw error
+    return data
+  },
+
+  // Edytuj ilość klientów i sumę wpłat pracownika (dla manager/szef/admin)
+  async updateEmployeeClientStats(userId: string, clientsCount: number, totalPayments: number, currentUser: User) {
+    // Sprawdź uprawnienia
+    if (!['manager', 'szef', 'admin'].includes(currentUser.role)) {
+      throw new Error('Brak uprawnień do modyfikacji statystyk')
+    }
+
+    try {
+      console.log(`📝 Aktualizuję statystyki pracownika ${userId}: klienci=${clientsCount}, wpłaty=${totalPayments}`)
+      
+      // Dla prostoty, rozłóżmy klientów równomiernie na C/AS/S (1/3 każdego)
+      const canvasCount = Math.floor(clientsCount / 3)
+      const antysaleCount = Math.floor(clientsCount / 3)
+      const saleCount = clientsCount - canvasCount - antysaleCount
+      
+      // Oblicz prowizję (3% od sumy wpłat w PLN, przeliczone na EUR)
+      const commissionEUR = (totalPayments * 0.03) / 4.5 // Przykładowy kurs PLN/EUR = 4.5
+      
+      const updates = {
+        monthly_canvas: canvasCount,
+        monthly_antysale: antysaleCount,
+        monthly_sale: saleCount,
+        total_commissions: commissionEUR,
+        total_penalties: 0, // Reset kar
+        // Dodamy customowe pola dla ilości klientów i sumy wpłat
+        custom_clients_count: clientsCount,
+        custom_total_payments: totalPayments
+      }
+
+      const { data, error } = await supabase
+        .from('employee_stats')
+        .update(updates)
+        .eq('user_id', userId)
+        .select(`
+          *,
+          user:users!user_id (
+            id,
+            full_name,
+            email,
+            avatar_url,
+            role
+          )
+        `)
+        .single()
+
+      if (error) {
+        console.error('❌ Błąd aktualizacji statystyk:', error)
+        throw error
+      }
+
+      console.log('✅ Zaktualizowano statystyki pracownika')
+      return data
+    } catch (error) {
+      console.error('❌ Błąd w updateEmployeeClientStats:', error)
+      throw error
+    }
+  },
+
+  // Stwórz statystyki dla nowego pracownika
+  async createEmployeeStats(userId: string, currentUser: User) {
+    // Sprawdź uprawnienia
+    if (!['manager', 'szef', 'admin'].includes(currentUser.role)) {
+      throw new Error('Brak uprawnień do tworzenia statystyk')
+    }
+
+    const { data, error } = await supabase
+      .from('employee_stats')
+      .insert([{
+        user_id: userId,
+        daily_target: 20,
+        commission_rate: 3.0
+      }])
+      .select()
+      .single()
 
     if (error) throw error
     return data
@@ -775,13 +1628,47 @@ export const authApi = {
 
   // Pobierz wszystkich użytkowników (dla opcji filtrowania)
   async getAllUsers() {
-    const { data, error } = await supabase
-      .from('users')
-      .select('id, full_name, email, role, avatar_url')
-      .order('full_name')
-    
-    if (error) throw error
-    return data as User[]
+    try {
+      console.log('👥 getAllUsers START - sprawdzam RLS...')
+      
+      // Sprawdź aktualnego użytkownika
+      const { data: { user } } = await supabase.auth.getUser()
+      console.log('👤 Aktualny użytkownik:', user?.email, user?.id)
+      
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, full_name, email, role, avatar_url')
+        .order('full_name')
+      
+      console.log('👥 getAllUsers - znaleziono użytkowników:', data?.length || 0)
+      console.log('👥 getAllUsers - błąd:', error)
+      
+      if (error) {
+        console.error('❌ RLS Error in getAllUsers:', error)
+        
+        // Sprawdź czy to problem z RLS
+        if (error.code === 'PGRST116' || error.message?.includes('RLS') || error.message?.includes('permission')) {
+          console.error('🔒 Problem z Row Level Security - pracownik nie może widzieć innych użytkowników')
+        }
+        
+        throw error
+      }
+      
+      if (data && data.length > 0) {
+        console.log('👥 Przykład użytkowników:', data.slice(0, 3).map(u => ({
+          id: u.id,
+          name: u.full_name,
+          role: u.role
+        })))
+      } else {
+        console.log('👥 UWAGA: Brak danych użytkowników - może RLS blokuje dostęp')
+      }
+      
+      return data as User[]
+    } catch (error) {
+      console.error('❌ getAllUsers FAILED:', error)
+      throw error
+    }
   },
 
   // Sprawdź sesję użytkownika
@@ -806,6 +1693,91 @@ export const authApi = {
     
     if (error) throw error
     return data as User
+  },
+
+  // Bezpieczne pobieranie użytkowników do wyświetlania (odporne na RLS)
+  async getAllUsersForDisplay() {
+    try {
+      console.log('👥 getAllUsersForDisplay START - bezpieczne pobieranie...')
+      
+      // Sprawdź aktualnego użytkownika
+      const { data: { user } } = await supabase.auth.getUser()
+      console.log('👤 Aktualny użytkownik:', user?.email, user?.id)
+      
+      if (!user) {
+        console.log('❌ Brak zalogowanego użytkownika')
+        return []
+      }
+      
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, full_name, email, role, avatar_url')
+        .order('full_name')
+      
+      console.log('👥 getAllUsersForDisplay - znaleziono użytkowników:', data?.length || 0)
+      
+      if (error) {
+        console.error('❌ RLS Error in getAllUsersForDisplay:', error)
+        
+        // Jeśli to problem z RLS, zwróć przynajmniej aktualnego użytkownika
+        if (error.code === 'PGRST116' || error.message?.includes('RLS') || error.message?.includes('permission')) {
+          console.error('🔒 RLS blokuje dostęp - zwracam tylko aktualnego użytkownika')
+          
+          // Pobierz profil aktualnego użytkownika
+          try {
+            const userProfile = await this.getUserProfile(user.id)
+            console.log('👤 Fallback: używam profilu aktualnego użytkownika:', userProfile.full_name)
+            return [userProfile]
+          } catch (profileError) {
+            console.error('❌ Nie można pobrać profilu użytkownika:', profileError)
+            return []
+          }
+        }
+        
+        // Inny błąd - zwróć pustą tablicę
+        console.error('❌ Inny błąd - zwracam pustą tablicę')
+        return []
+      }
+      
+      if (data && data.length > 0) {
+        console.log('👥 Udane pobranie użytkowników:', data.length)
+        console.log('👥 Przykład użytkowników:', data.slice(0, 3).map(u => ({
+          id: u.id,
+          name: u.full_name,
+          role: u.role
+        })))
+        return data as User[]
+      } else {
+        console.log('👥 UWAGA: Brak danych użytkowników')
+        
+        // Fallback - przynajmniej aktualny użytkownik
+        try {
+          const userProfile = await this.getUserProfile(user.id)
+          console.log('👤 Fallback: używam profilu aktualnego użytkownika:', userProfile.full_name)
+          return [userProfile]
+        } catch (profileError) {
+          console.error('❌ Nie można pobrać profilu użytkownika:', profileError)
+          return []
+        }
+      }
+      
+    } catch (error) {
+      console.error('❌ getAllUsersForDisplay CRITICAL ERROR:', error)
+      
+      // Krytyczny fallback - spróbuj przynajmniej pobrać aktualnego użytkownika
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const userProfile = await this.getUserProfile(user.id)
+          console.log('👤 Krytyczny fallback: zwracam aktualnego użytkownika:', userProfile.full_name)
+          return [userProfile]
+        }
+      } catch (criticalError) {
+        console.error('❌ Krytyczny błąd fallback:', criticalError)
+      }
+      
+      return []
+    }
   }
 }
 

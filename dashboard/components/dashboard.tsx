@@ -30,27 +30,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, PieChart, Pie, Cell } from "recharts"
 import Link from "next/link"
 import { useAuth } from "@/store/useStore"
-import { clientsApi, getCanvasStatusColor } from "@/lib/supabase"
-
-// Mockowane dane klientów z slotami
-const mockClients = [
-  { id: 1, name: 'Jan Kowalski', company: 'ABC Sp. z o.o.', status: 'canvas', slot: '8:00', phone: '+48 123 456 789' },
-  { id: 2, name: 'Anna Nowak', company: 'XYZ Ltd.', status: 'canvas', slot: '9:00', phone: '+48 987 654 321' },
-  { id: 3, name: 'Piotr Zieliński', company: 'DEF Group', status: 'sale', slot: '10:30', phone: '+48 111 222 333' },
-  { id: 4, name: 'Maria Wiśniewska', company: 'GHI Corp.', status: 'sale', slot: '11:00', phone: '+48 444 555 666' },
-  { id: 5, name: 'Tomasz Kaczmarek', company: 'JKL Inc.', status: 'antysale', slot: '13:00', phone: '+48 777 888 999' },
-  { id: 6, name: 'Ewa Lewandowska', company: 'MNO Sp. z o.o.', status: 'antysale', slot: '14:30', phone: '+48 333 444 555' },
-  { id: 7, name: 'Adam Szymański', company: 'PQR Ltd.', status: 'canvas', slot: '15:30', phone: '+48 666 777 888' },
-  { id: 8, name: 'Katarzyna Wójcik', company: 'STU Group', status: 'sale', slot: '16:00', phone: '+48 999 000 111' },
-]
-
-// Plan dnia zgodnie z README
-const dailySchedule = [
-  { time: '8:00 - 10:00', type: 'canvas', color: '#06b6d4', clients: mockClients.filter(c => c.status === 'canvas' && ['8:00', '9:00'].includes(c.slot)) },
-  { time: '10:10 - 12:00', type: 'sales', color: '#10b981', clients: mockClients.filter(c => c.status === 'sale' && ['10:30', '11:00'].includes(c.slot)) },
-  { time: '12:30 - 15:00', type: 'antysales', color: '#f59e0b', clients: mockClients.filter(c => c.status === 'antysale' && ['13:00', '14:30'].includes(c.slot)) },
-  { time: '15:10 - 16:30', type: 'canvas + sales', color: '#8b5cf6', clients: mockClients.filter(c => (c.status === 'canvas' || c.status === 'sale') && ['15:30', '16:00'].includes(c.slot)) },
-]
+import { clientsApi, getCanvasStatusColor, DailyScheduleSlot } from "@/lib/supabase"
 
 // Ostatnie aktywności
 const recentActivities = [
@@ -76,6 +56,8 @@ export function Dashboard() {
   const [totalClients, setTotalClients] = useState(0)
   const [clients, setClients] = useState<any[]>([])
   const [canvasStats, setCanvasStats] = useState({ high: 0, medium: 0, low: 0, total: 0 })
+  const [dailySchedule, setDailySchedule] = useState<DailyScheduleSlot[]>([])
+  const [scheduleLoading, setScheduleLoading] = useState(true)
 
   // Funkcja do pobierania i filtrowania danych klientów
   const loadClientStats = async () => {
@@ -134,6 +116,25 @@ export function Dashboard() {
     }
   }
 
+  // Funkcja do ładowania planu dnia z rzeczywistymi klientami
+  const loadDailySchedule = async () => {
+    if (!user || user.role !== 'pracownik') return
+    
+    setScheduleLoading(true)
+    try {
+      console.log('📅 Ładowanie planu dnia z rzeczywistymi klientami...')
+      const schedule = await clientsApi.getDailyScheduleWithClients(user)
+      setDailySchedule(schedule)
+      console.log('✅ Plan dnia załadowany:', schedule)
+    } catch (error) {
+      console.error('❌ Błąd ładowania planu dnia:', error)
+      // W przypadku błędu ustaw pusty schedule
+      setDailySchedule([])
+    } finally {
+      setScheduleLoading(false)
+    }
+  }
+
   // Funkcja do aktualizacji statystyk canvas
   const updateCanvasStats = (clientsList: any[] = clients) => {
     const canvasClients = clientsList.filter(client => client.status === 'canvas')
@@ -151,6 +152,7 @@ export function Dashboard() {
   useEffect(() => {
     if (user) {
       loadClientStats()
+      loadDailySchedule()
     }
   }, [user])
 
@@ -164,53 +166,107 @@ export function Dashboard() {
             <Card className="col-span-8 bg-slate-800 border-slate-700">
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
-                  <CardTitle className="text-white">Plan dnia - Kalendarz</CardTitle>
-                  <p className="text-sm text-slate-400 mt-1">Rozkład klientów wg slotów godzinowych</p>
+                  <CardTitle className="text-white flex items-center gap-2">
+                    Plan dnia - Kalendarz
+                    {scheduleLoading && (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-cyan-400"></div>
+                    )}
+                  </CardTitle>
+                  <p className="text-sm text-slate-400 mt-1">
+                    Przypomnienia na dziś ({today}) - rzeczywisci klienci z bazy
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                  <span className="text-sm text-slate-400">Live</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={loadDailySchedule}
+                    disabled={scheduleLoading}
+                    className="text-cyan-400 hover:text-cyan-300"
+                  >
+                    <Calendar className="h-4 w-4" />
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <span className="text-sm text-slate-400">Live</span>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="space-y-4">
-                  {dailySchedule.map((slot, index) => (
-                    <div key={index} className="border border-slate-700 rounded-lg p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          <div 
-                            className="w-4 h-4 rounded-full" 
-                            style={{ backgroundColor: slot.color }}
-                          ></div>
-                          <span className="font-medium text-white">{slot.time}</span>
-                          <Badge variant="outline" className="text-xs">
-                            {slot.type}
-                          </Badge>
+                {scheduleLoading ? (
+                  <div className="flex items-center justify-center h-48">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400"></div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {dailySchedule.length === 0 ? (
+                      <div className="flex items-center justify-center h-48 text-slate-400">
+                        <div className="text-center">
+                          <Calendar className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                          <p>Brak przypomnień na dziś</p>
+                          <p className="text-xs mt-1">Dodaj przypomnienia w sekcji Klienci</p>
                         </div>
-                        <span className="text-sm text-slate-400">
-                          {slot.clients.length} klientów
-                        </span>
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {slot.clients.length === 0 ? (
-                          <div className="text-slate-500 text-sm italic">Brak klientów</div>
-                        ) : (
-                          slot.clients.map((client) => (
-                            <div key={client.id} className="flex items-center gap-2 p-2 bg-slate-700/50 rounded">
-                              <div className="w-2 h-2 bg-cyan-400 rounded-full"></div>
-                              <div className="flex-1 min-w-0">
-                                <div className="text-sm text-white truncate">{client.name}</div>
-                                <div className="text-xs text-slate-400 truncate">{client.company}</div>
-                              </div>
-                              <Clock className="h-3 w-3 text-slate-400" />
-                              <span className="text-xs text-slate-400">{client.slot}</span>
+                    ) : (
+                      dailySchedule.map((slot, index) => (
+                        <div key={index} className="border border-slate-700 rounded-lg p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-3">
+                              <div 
+                                className="w-4 h-4 rounded-full" 
+                                style={{ backgroundColor: slot.color }}
+                              ></div>
+                              <span className="font-medium text-white">{slot.time}</span>
+                              <Badge variant="outline" className="text-xs">
+                                {slot.type}
+                              </Badge>
                             </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                            <span className="text-sm text-slate-400">
+                              {slot.clients.length} klientów
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {slot.clients.length === 0 ? (
+                              <div className="text-slate-500 text-sm italic col-span-2">Brak klientów w tym slocie</div>
+                            ) : (
+                              slot.clients.map((client) => (
+                                <div key={client.id} className="flex items-center gap-2 p-2 bg-slate-700/50 rounded">
+                                  <div className="w-2 h-2 bg-cyan-400 rounded-full"></div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-sm text-white truncate">
+                                      {client.first_name} {client.last_name}
+                                    </div>
+                                    <div className="text-xs text-slate-400 truncate">{client.company_name}</div>
+                                    {client.reminder?.note && (
+                                      <div className="text-xs text-orange-300 truncate">📝 {client.reminder.note}</div>
+                                    )}
+                                  </div>
+                                  <div className="flex flex-col items-end gap-1">
+                                    <div className="flex items-center gap-1">
+                                      <Clock className="h-3 w-3 text-slate-400" />
+                                      <span className="text-xs text-slate-400">{client.reminder?.time}</span>
+                                    </div>
+                                    <Badge 
+                                      variant="outline" 
+                                      className={`text-xs ${
+                                        client.status === 'canvas' ? 'border-cyan-500/30 text-cyan-400' :
+                                        client.status === 'sale' ? 'border-green-500/30 text-green-400' :
+                                        client.status === 'antysale' ? 'border-orange-500/30 text-orange-400' :
+                                        'border-slate-500/30 text-slate-400'
+                                      }`}
+                                    >
+                                      {client.status}
+                                    </Badge>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
               </CardContent>
             </Card>
           ) : (

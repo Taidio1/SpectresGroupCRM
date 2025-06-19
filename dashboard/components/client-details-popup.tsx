@@ -6,8 +6,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Separator } from '@/components/ui/separator'
-import { Phone, Mail, Building2, FileText, Calendar, User, X } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
+import { Phone, Mail, Building2, FileText, Calendar, User, X, Edit, Save, XCircle } from 'lucide-react'
 import { useLanguage } from '@/lib/language-context'
+import { clientsApi, Client as SupabaseClient } from '@/lib/supabase'
+import { useAuth } from '@/store/useStore'
+import { useToast } from '@/hooks/use-toast'
+
+type ClientStatus = 'canvas' | 'brak_kontaktu' | 'nie_zainteresowany' | 'zdenerwowany' | 'antysale' | 'sale' | '$$'
 
 interface Client {
   id: string
@@ -34,10 +41,19 @@ interface ClientDetailsPopupProps {
   client: Client | null
   isOpen: boolean
   onClose: () => void
+  onUpdate?: (updatedClient: Client) => void
 }
 
-export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPopupProps) {
+export function ClientDetailsPopup({ client, isOpen, onClose, onUpdate }: ClientDetailsPopupProps) {
   const { t } = useLanguage()
+  const { user } = useAuth()
+  const { toast } = useToast()
+  
+  // Stany do edycji
+  const [isEditing, setIsEditing] = useState(false)
+  const [editedStatus, setEditedStatus] = useState<ClientStatus>('canvas')
+  const [editedNotes, setEditedNotes] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
 
   if (!client) return null
 
@@ -51,6 +67,17 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
     'sale': 'bg-green-500/20 text-green-400 border-green-500/30',
     '$$': 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
   }
+
+  // Opcje statusów do wyboru
+  const statusOptions = [
+    { value: 'canvas', label: 'Canvas' },
+    { value: 'brak_kontaktu', label: 'Brak kontaktu' },
+    { value: 'nie_zainteresowany', label: 'Nie zainteresowany' },
+    { value: 'zdenerwowany', label: 'Zdenerwowany' },
+    { value: 'antysale', label: 'Antysale' },
+    { value: 'sale', label: 'Sale' },
+    { value: '$$', label: '$$' },
+  ]
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
@@ -69,6 +96,82 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
 
   const handleEmailClick = (email: string) => {
     window.open(`mailto:${email}`, '_self')
+  }
+
+  const handleNipClick = (nip: string) => {
+    if (nip && nip.trim() !== '' && nip !== 'brak informacji') {
+      // Usuń wszystkie niealfanumeryczne znaki z NIP
+      const cleanNip = nip.replace(/[^0-9]/g, '')
+      if (cleanNip.length > 0) {
+        window.open(`https://aleo.com/pl/firmy?phrase=${cleanNip}`, '_blank')
+      }
+    }
+  }
+
+  const handleEditStart = () => {
+    setEditedStatus(client.status as ClientStatus)
+    setEditedNotes(client.notes || '')
+    setIsEditing(true)
+  }
+
+  const handleEditCancel = () => {
+    setIsEditing(false)
+    setEditedStatus('canvas')
+    setEditedNotes('')
+  }
+
+  const handleSave = async () => {
+    if (!user) {
+      console.error('Brak zalogowanego użytkownika')
+      return
+    }
+
+    setIsSaving(true)
+    try {
+      const updates: Partial<SupabaseClient> = {}
+      
+      if (editedStatus !== client.status) {
+        updates.status = editedStatus
+      }
+      
+      if (editedNotes !== client.notes) {
+        updates.notes = editedNotes
+      }
+
+      if (Object.keys(updates).length > 0) {
+        const updatedClient = await clientsApi.updateClient(client.id, updates, user)
+        
+        // Powiadom komponent nadrzędny o aktualizacji
+        if (onUpdate) {
+          onUpdate(updatedClient as Client)
+        }
+
+        // Pokaż toast sukcesu
+        toast({
+          title: "Zapisano zmiany",
+          description: `Zaktualizowano dane klienta ${client.first_name} ${client.last_name}`,
+          variant: "default",
+        })
+      } else {
+        // Brak zmian
+        toast({
+          title: "Brak zmian",
+          description: "Nie wprowadzono żadnych zmian",
+          variant: "default",
+        })
+      }
+
+      setIsEditing(false)
+    } catch (error) {
+      console.error('Błąd zapisywania zmian:', error)
+      toast({
+        title: "Błąd zapisywania",
+        description: "Nie udało się zapisać zmian. Spróbuj ponownie.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   return (
@@ -111,11 +214,45 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
         <div className="flex-1 overflow-y-auto space-y-6 pr-2">
           {/* Status i podstawowe info */}
           <div className="flex items-center justify-between">
-            <Badge 
-              className={statusColors[client.status as keyof typeof statusColors] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'}
-            >
-              {t(`clients.statuses.${client.status}`) || client.status}
-            </Badge>
+            <div className="flex items-center gap-3">
+              {isEditing ? (
+                                 <div className="space-y-2">
+                   <label className="text-sm text-slate-400">Status</label>
+                   <Select value={editedStatus} onValueChange={(value) => setEditedStatus(value as ClientStatus)}>
+                     <SelectTrigger className="w-[200px] bg-slate-700 border-slate-600 text-white">
+                       <SelectValue placeholder="Wybierz status" />
+                     </SelectTrigger>
+                     <SelectContent className="bg-slate-700 border-slate-600">
+                       {statusOptions.map((option) => (
+                         <SelectItem key={option.value} value={option.value} className="text-white hover:bg-slate-600">
+                           {option.label}
+                         </SelectItem>
+                       ))}
+                     </SelectContent>
+                   </Select>
+                 </div>
+              ) : (
+                <Badge 
+                  className={statusColors[client.status as keyof typeof statusColors] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'}
+                >
+                  {t(`clients.statuses.${client.status}`) || 
+                    statusOptions.find(s => s.value === client.status)?.label || 
+                    client.status}
+                </Badge>
+              )}
+              
+              {!isEditing && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleEditStart}
+                  className="text-slate-400 hover:text-white hover:bg-slate-700"
+                >
+                  <Edit className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            
             <div className="text-sm text-slate-400">
               <Calendar className="h-4 w-4 inline mr-1" />
               Ostatnia edycja: {lastUpdate.date} o {lastUpdate.time}
@@ -173,7 +310,19 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
                   <FileText className="h-4 w-4 text-slate-400" />
                   <div>
                     <div className="text-sm text-slate-400">NIP</div>
-                    <div className="text-white">{client.nip}</div>
+                    {client.nip && client.nip.trim() !== '' && client.nip !== 'brak informacji' ? (
+                      <button
+                        onClick={() => handleNipClick(client.nip)}
+                        className="text-cyan-400 hover:text-cyan-300 hover:underline transition-colors text-left"
+                        title="Kliknij aby wyszukać firmę w bazie Aleo"
+                      >
+                        {client.nip}
+                      </button>
+                    ) : (
+                      <div className="text-slate-500 italic">
+                        {client.nip || 'brak informacji'}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -236,18 +385,31 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
           )}
 
           {/* Notatka */}
-          {client.notes && (
-            <div className="space-y-3">
-              <h3 className="text-lg font-medium text-white flex items-center gap-2">
-                <FileText className="h-5 w-5" />
-                Notatka
-              </h3>
-              
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <p className="text-slate-300 whitespace-pre-wrap">{client.notes}</p>
+          <div className="space-y-3">
+            <h3 className="text-lg font-medium text-white flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Notatka
+            </h3>
+            
+            {isEditing ? (
+              <div className="space-y-2">
+                <Textarea
+                  value={editedNotes}
+                  onChange={(e) => setEditedNotes(e.target.value)}
+                  placeholder="Dodaj notatkę..."
+                  className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-400 min-h-[120px]"
+                />
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="bg-slate-700/50 rounded-lg p-4">
+                {client.notes ? (
+                  <p className="text-slate-300 whitespace-pre-wrap">{client.notes}</p>
+                ) : (
+                  <p className="text-slate-500 italic">Brak notatki</p>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Daty */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
@@ -269,21 +431,45 @@ export function ClientDetailsPopup({ client, isOpen, onClose }: ClientDetailsPop
         {/* Akcje */}
         <div className="flex justify-between items-center pt-4 border-t border-slate-700 flex-shrink-0">
           <div className="flex gap-2">
-            <Button
-              onClick={() => handlePhoneClick(client.phone)}
-              className="bg-green-600 hover:bg-green-700 text-white"
-            >
-              <Phone className="h-4 w-4 mr-2" />
-              Zadzwoń
-            </Button>
-            <Button
-              onClick={() => handleEmailClick(client.email)}
-              variant="outline"
-              className="border-slate-600 text-slate-300 hover:bg-slate-700"
-            >
-              <Mail className="h-4 w-4 mr-2" />
-              Email
-            </Button>
+            {isEditing ? (
+              <>
+                <Button
+                  onClick={handleSave}
+                  disabled={isSaving}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  <Save className="h-4 w-4 mr-2" />
+                  {isSaving ? 'Zapisywanie...' : 'Zapisz'}
+                </Button>
+                <Button
+                  onClick={handleEditCancel}
+                  variant="outline"
+                  disabled={isSaving}
+                  className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                >
+                  <XCircle className="h-4 w-4 mr-2" />
+                  Anuluj
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  onClick={() => handlePhoneClick(client.phone)}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  <Phone className="h-4 w-4 mr-2" />
+                  Zadzwoń
+                </Button>
+                <Button
+                  onClick={() => handleEmailClick(client.email)}
+                  variant="outline"
+                  className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                >
+                  <Mail className="h-4 w-4 mr-2" />
+                  Email
+                </Button>
+              </>
+            )}
           </div>
           <Button
             onClick={onClose}

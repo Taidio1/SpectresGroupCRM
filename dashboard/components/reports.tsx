@@ -25,6 +25,9 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Edit,
+  Save,
+  X,
 } from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -36,6 +39,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts"
 import { Progress } from "@/components/ui/progress"
+import { useAuth } from "@/store/useStore"
+import { reportsApi, type EmployeeStats } from "@/lib/supabase"
+import { useToast } from "@/hooks/use-toast"
 
 // Dane do raportów
 const dailyStats = {
@@ -89,124 +95,50 @@ const weeklyTrendData = [
   { day: 'Nd', klienci: 12, rozmowy: 19, konwersja: 48 },
 ]
 
-// Dane statystyk pracowników
-const employeeStatsData = [
-  {
-    id: 1,
-    name: "Jan Kowalski",
-    email: "jan.kowalski@firma.pl",
-    role: "pracownik",
-    avatar: "/avatars/jan.jpg",
-    phoneCallsTotal: 145,
-    phoneCallsToday: 23,
+// Funkcja mapująca EmployeeStats na format używany przez komponent
+const mapEmployeeStatsToDisplay = (stats: EmployeeStats[]) => {
+  // Filtruj tylko te rekordy które mają prawidłowe dane użytkownika
+  return stats
+    .filter(stat => stat.user && stat.user.full_name) // Tylko z prawidłowymi danymi użytkownika
+    .map(stat => ({
+      id: stat.id,
+      user_id: stat.user_id,
+      name: stat.user?.full_name || 'Brak danych',
+      email: stat.user?.email || 'brak@email.com',
+      role: stat.user?.role || 'pracownik',
+      avatar: stat.user?.avatar_url || '/placeholder-user.jpg',
+    // Dane dla prowizji z bazy danych - z priorytetem custom pól
+    dailyTarget: stat.daily_target,
+    dailyAchieved: stat.daily_achieved || 0,
+    yesterdayShortage: stat.yesterday_shortage || 0,
+    monthlyCanvas: stat.monthly_canvas || 0,
+    monthlyAntysale: stat.monthly_antysale || 0,
+    monthlySale: stat.monthly_sale || 0,
+    commissionRate: stat.commission_rate,
+    commissionEUR: stat.total_commissions || 0,
+    penalty: stat.total_penalties || 0,
+    // Edytowalne pola
+    customClientsCount: stat.custom_clients_count || 0,
+    customTotalPayments: stat.custom_total_payments || 0,
+    // Mapowanie statusChanges z dzisiaj
     statusChanges: {
-      canvas: 45,
-      sale: 28,
-      antysale: 15,
-      brak_kontaktu: 32,
-      nie_zainteresowany: 18,
-      zdenerwowany: 7
+      canvas: stat.status_changes_today?.canvas || 0,
+      sale: stat.status_changes_today?.sale || 0,
+      antysale: stat.status_changes_today?.antysale || 0,
+      brak_kontaktu: stat.status_changes_today?.other || 0,
+      nie_zainteresowany: 0,
+      zdenerwowany: 0
     },
-    conversionRate: 68.2,
-    avgCallDuration: "8:42",
-    clientsAssigned: 89,
-    clientsActive: 45,
-    efficiency: 85,
-    lastActive: "2024-01-15 14:30"
-  },
-  {
-    id: 2,
-    name: "Anna Nowak",
-    email: "anna.nowak@firma.pl",
-    role: "pracownik",
-    avatar: "/avatars/anna.jpg",
-    phoneCallsTotal: 189,
-    phoneCallsToday: 31,
-    statusChanges: {
-      canvas: 52,
-      sale: 38,
-      antysale: 12,
-      brak_kontaktu: 45,
-      nie_zainteresowany: 25,
-      zdenerwowany: 17
-    },
-    conversionRate: 74.5,
-    avgCallDuration: "9:15",
-    clientsAssigned: 112,
-    clientsActive: 67,
-    efficiency: 92,
-    lastActive: "2024-01-15 15:45"
-  },
-  {
-    id: 3,
-    name: "Piotr Zieliński",
-    email: "piotr.zielinski@firma.pl",
-    role: "pracownik",
-    avatar: "/avatars/piotr.jpg",
-    phoneCallsTotal: 167,
-    phoneCallsToday: 28,
-    statusChanges: {
-      canvas: 48,
-      sale: 32,
-      antysale: 18,
-      brak_kontaktu: 38,
-      nie_zainteresowany: 22,
-      zdenerwowany: 9
-    },
-    conversionRate: 65.8,
-    avgCallDuration: "7:58",
-    clientsAssigned: 95,
-    clientsActive: 52,
-    efficiency: 78,
-    lastActive: "2024-01-15 13:20"
-  },
-  {
-    id: 4,
-    name: "Maria Wiśniewska",
-    email: "maria.wisniewska@firma.pl",
-    role: "pracownik",
-    avatar: "/avatars/maria.jpg",
-    phoneCallsTotal: 203,
-    phoneCallsToday: 35,
-    statusChanges: {
-      canvas: 58,
-      sale: 42,
-      antysale: 21,
-      brak_kontaktu: 48,
-      nie_zainteresowany: 28,
-      zdenerwowany: 6
-    },
-    conversionRate: 79.3,
-    avgCallDuration: "10:22",
-    clientsAssigned: 128,
-    clientsActive: 78,
-    efficiency: 94,
-    lastActive: "2024-01-15 16:10"
-  },
-  {
-    id: 5,
-    name: "Tomasz Kaczmarek",
-    email: "tomasz.kaczmarek@firma.pl",
-    role: "pracownik",
-    avatar: "/avatars/tomasz.jpg",
-    phoneCallsTotal: 134,
-    phoneCallsToday: 19,
-    statusChanges: {
-      canvas: 38,
-      sale: 22,
-      antysale: 25,
-      brak_kontaktu: 35,
-      nie_zainteresowany: 12,
-      zdenerwowany: 2
-    },
-    conversionRate: 58.7,
-    avgCallDuration: "6:45",
-    clientsAssigned: 76,
-    clientsActive: 38,
-    efficiency: 72,
-    lastActive: "2024-01-15 12:15"
-  }
-]
+    // Obliczone wartości
+    conversionRate: stat.monthly_sale > 0 ? 
+      ((stat.monthly_sale / (stat.monthly_canvas + stat.monthly_antysale + stat.monthly_sale)) * 100).toFixed(1) : 
+      0,
+    efficiency: (stat.daily_achieved || 0) >= stat.daily_target ? 
+      Math.min(100, (((stat.daily_achieved || 0) / stat.daily_target) * 100)) : 
+      (((stat.daily_achieved || 0) / stat.daily_target) * 100),
+    lastActive: new Date().toISOString()
+  }))
+}
 
 const statusColors = {
   canvas: 'bg-blue-500/20 text-blue-400',
@@ -218,13 +150,52 @@ const statusColors = {
 }
 
 export function Reports() {
-  const [employees, setEmployees] = useState(employeeStatsData)
-  const [filteredEmployees, setFilteredEmployees] = useState(employeeStatsData)
+  const [employees, setEmployees] = useState<any[]>([])
+  const [filteredEmployees, setFilteredEmployees] = useState<any[]>([])
+  const [employeeStatsData, setEmployeeStatsData] = useState<EmployeeStats[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [sortField, setSortField] = useState<string>('name')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
   const [selectedPeriod, setSelectedPeriod] = useState('today')
+  const [loading, setLoading] = useState(true)
+  const [editingEmployee, setEditingEmployee] = useState<string | null>(null)
+  const [editValues, setEditValues] = useState<{ clientsCount: number, totalPayments: number }>({ clientsCount: 0, totalPayments: 0 })
+  const [saving, setSaving] = useState(false)
+  const { user } = useAuth()
+  const { toast } = useToast()
   const today = new Date().toLocaleDateString('pl-PL')
+
+  // Sprawdź czy użytkownik ma uprawnienia do statystyk pracowników
+  const hasManagerAccess = user?.role && ['manager', 'szef', 'admin'].includes(user.role)
+
+  // Ładowanie danych z bazy danych
+  const loadEmployeeStats = async () => {
+    if (!user || !hasManagerAccess) return
+    
+    setLoading(true)
+    try {
+      console.log('📊 Ładowanie statystyk pracowników...')
+      const stats = await reportsApi.getEmployeeStats(user)
+      setEmployeeStatsData(stats)
+      
+      // Konwertuj na format używany przez UI
+      const displayData = mapEmployeeStatsToDisplay(stats)
+      setEmployees(displayData)
+      
+      console.log('✅ Załadowano statystyki:', stats.length)
+    } catch (error) {
+      console.error('❌ Błąd ładowania statystyk:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Ładuj dane przy pierwszym renderze
+  useEffect(() => {
+    if (user && hasManagerAccess) {
+      loadEmployeeStats()
+    }
+  }, [user])
 
   // Funkcja filtrowania
   useEffect(() => {
@@ -244,8 +215,8 @@ export function Reports() {
       let bValue: any = b[sortField as keyof typeof b]
 
       if (sortField === 'totalStatusChanges') {
-        aValue = Object.values(a.statusChanges).reduce((sum, val) => sum + val, 0)
-        bValue = Object.values(b.statusChanges).reduce((sum, val) => sum + val, 0)
+        aValue = Object.values(a.statusChanges as Record<string, number>).reduce((sum: number, val: number) => sum + val, 0)
+        bValue = Object.values(b.statusChanges as Record<string, number>).reduce((sum: number, val: number) => sum + val, 0)
       }
 
       if (typeof aValue === 'string') {
@@ -284,8 +255,8 @@ export function Reports() {
     return 'bg-red-500/20 text-red-400'
   }
 
-  const getTotalStatusChanges = (statusChanges: any) => {
-    return Object.values(statusChanges).reduce((sum: number, val: any) => sum + val, 0)
+  const getTotalStatusChanges = (statusChanges: Record<string, number>) => {
+    return Object.values(statusChanges).reduce((sum: number, val: number) => sum + val, 0)
   }
 
   const handleExportPDF = () => {
@@ -296,17 +267,64 @@ export function Reports() {
     alert('Eksport do CSV - funkcjonalność w przygotowaniu')
   }
 
+  // Funkcje do obsługi edycji
+  const handleEditEmployee = (employee: any) => {
+    setEditingEmployee(employee.user_id)
+    setEditValues({
+      clientsCount: employee.customClientsCount,
+      totalPayments: employee.customTotalPayments
+    })
+  }
+
+  const handleCancelEdit = () => {
+    setEditingEmployee(null)
+    setEditValues({ clientsCount: 0, totalPayments: 0 })
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingEmployee || !user) return
+    
+    setSaving(true)
+    try {
+      console.log(`💾 Zapisywanie edycji dla pracownika ${editingEmployee}:`, editValues)
+      
+      await reportsApi.updateEmployeeClientStats(
+        editingEmployee,
+        editValues.clientsCount,
+        editValues.totalPayments,
+        user
+      )
+      
+      toast({
+        title: "Sukces",
+        description: "Statystyki pracownika zostały zaktualizowane"
+      })
+      
+      // Odśwież dane
+      await loadEmployeeStats()
+      
+      // Zakończ edycję
+      setEditingEmployee(null)
+      setEditValues({ clientsCount: 0, totalPayments: 0 })
+      
+    } catch (error) {
+      console.error('❌ Błąd zapisywania edycji:', error)
+      toast({
+        title: "Błąd",
+        description: error instanceof Error ? error.message : "Nie udało się zapisać zmian",
+        variant: "destructive"
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="w-full h-full">
       {/* Header - pełna szerokość */}
       <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Analityka i statystyki</h1>
-          <p className="text-slate-400">Szczegółowe raporty wydajności - {today}</p>
-        </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <Filter className="h-4 w-4 text-slate-400" />
               <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
                 <SelectTrigger className="w-32 bg-slate-800 border-slate-700">
                   <SelectValue />
@@ -583,6 +601,245 @@ export function Reports() {
               </Table>
             </CardContent>
           </Card>
+
+          {/* Tabela statystyk pracowników - TYLKO dla manager/szef/admin */}
+          {hasManagerAccess && (
+            <Card className="col-span-12 bg-slate-800 border-slate-700 mt-8">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-white flex items-center gap-2">
+                      <Award className="h-5 w-5 text-orange-400" />
+                      Statystyki pracowników z prowizją
+                    </CardTitle>
+                    <p className="text-sm text-slate-400">Szczegółowe statystyki, prowizje i kary</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="Szukaj pracownika..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-64 bg-slate-700 border-slate-600"
+                    />
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {loading ? (
+                  <div className="flex items-center justify-center h-64">
+                    <div className="text-slate-400">Ładowanie statystyk pracowników...</div>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-slate-700">
+                            <TableHead className="text-slate-400">
+                              <Button
+                                variant="ghost"
+                                onClick={() => handleSort('name')}
+                                className="text-slate-400 hover:text-white p-0 h-auto font-medium"
+                              >
+                                Pracownik {getSortIcon('name')}
+                              </Button>
+                            </TableHead>
+                            <TableHead className="text-slate-400 text-center">Klienci (edycja)</TableHead>
+                            <TableHead className="text-slate-400 text-center">Suma wpłat (edycja)</TableHead>
+                            <TableHead className="text-slate-400 text-center">Canvas</TableHead>
+                            <TableHead className="text-slate-400 text-center">AntyS</TableHead>
+                            <TableHead className="text-slate-400 text-center">Sale</TableHead>
+                            <TableHead className="text-slate-400 text-center">Prowizja (%)</TableHead>
+                            <TableHead className="text-slate-400 text-center">Prowizja (EUR)</TableHead>
+                            <TableHead className="text-slate-400 text-center">Akcje</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {filteredEmployees.map((employee) => {
+                            const isEditing = editingEmployee === employee.user_id
+                            
+                            return (
+                              <TableRow key={employee.id} className="border-slate-700 hover:bg-slate-700/30">
+                                <TableCell>
+                                  <div className="flex items-center gap-3">
+                                    <Avatar className="h-10 w-10">
+                                      <AvatarImage src={employee.avatar} />
+                                      <AvatarFallback className="bg-slate-700 text-slate-300">
+                                        {employee.name.split(' ').map((n: string) => n[0]).join('')}
+                                      </AvatarFallback>
+                                    </Avatar>
+                                    <div>
+                                      <div className="font-medium text-white">{employee.name}</div>
+                                      <div className="text-sm text-slate-400">{employee.email}</div>
+                                      <Badge className="bg-blue-500/20 text-blue-400 text-xs mt-1">
+                                        {employee.role}
+                                      </Badge>
+                                    </div>
+                                  </div>
+                                </TableCell>
+                                
+                                {/* Klienci (edycja) */}
+                                <TableCell className="text-center">
+                                  {isEditing ? (
+                                    <Input
+                                      type="number"
+                                      value={editValues.clientsCount}
+                                      onChange={(e) => setEditValues(prev => ({ ...prev, clientsCount: parseInt(e.target.value) || 0 }))}
+                                      className="w-20 bg-slate-700 border-slate-600 text-center"
+                                      min="0"
+                                    />
+                                  ) : (
+                                    <div className="font-semibold text-white">{employee.customClientsCount}</div>
+                                  )}
+                                </TableCell>
+                                
+                                {/* Suma wpłat (edycja) */}
+                                <TableCell className="text-center">
+                                  {isEditing ? (
+                                    <Input
+                                      type="number"
+                                      value={editValues.totalPayments}
+                                      onChange={(e) => setEditValues(prev => ({ ...prev, totalPayments: parseFloat(e.target.value) || 0 }))}
+                                      className="w-28 bg-slate-700 border-slate-600 text-center"
+                                      min="0"
+                                      step="0.01"
+                                    />
+                                  ) : (
+                                    <div className="text-slate-300">{employee.customTotalPayments.toLocaleString()} PLN</div>
+                                  )}
+                                </TableCell>
+                                
+                                {/* Canvas - set to 0 */}
+                                <TableCell className="text-center">
+                                  <Badge className="bg-blue-500/20 text-blue-400">
+                                    0
+                                  </Badge>
+                                </TableCell>
+                                
+                                {/* AntyS - set to 0 */}
+                                <TableCell className="text-center">
+                                  <Badge className="bg-orange-500/20 text-orange-400">
+                                    0
+                                  </Badge>
+                                </TableCell>
+                                
+                                {/* Sale - set to 0 */}
+                                <TableCell className="text-center">
+                                  <Badge className="bg-green-500/20 text-green-400">
+                                    0
+                                  </Badge>
+                                </TableCell>
+                                
+                                {/* Prowizja (%) */}
+                                <TableCell className="text-center">
+                                  <Badge className="bg-purple-500/20 text-purple-400">
+                                    {employee.commissionRate}%
+                                  </Badge>
+                                </TableCell>
+                                
+                                {/* Prowizja (EUR) - set to 0 */}
+                                <TableCell className="text-center">
+                                  <div className="font-semibold text-green-400">
+                                    €0.00
+                                  </div>
+                                </TableCell>
+                                
+                                {/* Akcje */}
+                                <TableCell className="text-center">
+                                  {isEditing ? (
+                                    <div className="flex items-center justify-center gap-2">
+                                      <Button
+                                        size="sm"
+                                        onClick={handleSaveEdit}
+                                        disabled={saving}
+                                        className="bg-green-600 hover:bg-green-700 h-8 w-8 p-0"
+                                      >
+                                        {saving ? (
+                                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                        ) : (
+                                          <Save className="h-4 w-4" />
+                                        )}
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={handleCancelEdit}
+                                        disabled={saving}
+                                        className="border-slate-600 hover:bg-slate-700 h-8 w-8 p-0"
+                                      >
+                                        <X className="h-4 w-4" />
+                                      </Button>
+                                    </div>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleEditEmployee(employee)}
+                                      className="border-slate-600 hover:bg-slate-700 h-8 w-8 p-0"
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                    </Button>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            )
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    
+                    {/* Podsumowanie prowizji */}
+                    <div className="mt-6 p-4 bg-slate-700/30 rounded-lg">
+                      <div className="grid grid-cols-4 gap-4 text-sm">
+                        <div className="text-center">
+                          <div className="text-slate-400">Łączna ilość klientów</div>
+                          <div className="text-xl font-bold text-cyan-400">
+                            {filteredEmployees.reduce((sum, emp) => sum + emp.customClientsCount, 0)}
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-slate-400">Łączne wpłaty</div>
+                          <div className="text-xl font-bold text-green-400">
+                            {filteredEmployees.reduce((sum, emp) => sum + emp.customTotalPayments, 0).toLocaleString()} PLN
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-slate-400">Średnia prowizja</div>
+                          <div className="text-xl font-bold text-purple-400">
+                            {filteredEmployees.length > 0 ? 
+                              (filteredEmployees.reduce((sum, emp) => sum + emp.commissionRate, 0) / filteredEmployees.length).toFixed(1) : 0}%
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-slate-400">Liczba pracowników</div>
+                          <div className="text-xl font-bold text-orange-400">
+                            {filteredEmployees.length}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Legenda */}
+                    <div className="mt-4 p-4 bg-slate-700/20 rounded-lg">
+                      <div className="text-sm text-slate-400 mb-2">Legenda:</div>
+                      <div className="grid grid-cols-2 gap-4 text-xs">
+                        <div>
+                          • <span className="text-cyan-400">Klienci (edycja)</span> - ręcznie wprowadzona ilość klientów<br/>
+                          • <span className="text-green-400">Suma wpłat (edycja)</span> - ręcznie wprowadzona suma wpłat w PLN<br/>
+                          • <span className="text-blue-400">Canvas / AntyS / Sale</span> - ustawione na 0 (narazie)
+                        </div>
+                        <div>
+                          • <span className="text-purple-400">Prowizja (%)</span> - stała stopa prowizji pracownika<br/>
+                          • <span className="text-green-400">Prowizja (EUR)</span> - ustawiona na 0 (narazie)<br/>
+                          • <span className="text-orange-400">Edycja</span> - kliknij ikonę edycji aby zmienić dane
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
     </div>
   )

@@ -33,6 +33,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Building2,
 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -47,10 +48,11 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Progress } from "@/components/ui/progress"
 import { useAuth } from "@/store/useStore"
-import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUrl } from "@/lib/supabase"
+import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUrl, csvImportApi } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
-import { authApi } from "@/lib/supabase"
+import { authApi, supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/language-context"
 import { ClientDetailsPopup } from "@/components/client-details-popup"
 
@@ -245,6 +247,14 @@ export function ClientsTable() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false)
   const [newClient, setNewClient] = useState(emptyClient)
+  
+  // Stany dla upload plików
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [dragActive, setDragActive] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 100, status: '' })
+  const [importResults, setImportResults] = useState<{ success: number, errors: any[] } | null>(null)
+  const [columnAnalysis, setColumnAnalysis] = useState<{ found: string[], missing: string[], optional: string[] } | null>(null)
   const [currentUser] = useState('current_user')
   const [clientHistory, setClientHistory] = useState<ClientHistory[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -254,6 +264,9 @@ export function ClientsTable() {
   const [ownerFilter, setOwnerFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [availableOwners, setAvailableOwners] = useState<any[]>([])
+  
+  // Stan dla WSZYSTKICH użytkowników w systemie (do wyświetlania właścicieli)
+  const [allUsers, setAllUsers] = useState<any[]>([])
   
   // Sortowanie
   const [sortField, setSortField] = useState<string>('updated_at')
@@ -271,6 +284,15 @@ export function ClientsTable() {
   
   // Ref dla ScrollArea historii
   const historyScrollRef = useRef<HTMLDivElement>(null)
+  
+  // Stan dla real-time aktualizacji właścicieli
+  const [ownerUpdates, setOwnerUpdates] = useState<Record<string, any>>({})
+  
+  // Ref dla subskrypcji
+  const ownerSubscriptionRef = useRef<any>(null)
+  
+  // Ref dla interwału odświeżania
+  const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
 
 
@@ -284,6 +306,179 @@ export function ClientsTable() {
           behavior: 'smooth'
         })
       }
+    }
+  }
+
+  // Setup subskrypcji real-time dla zmian właścicieli
+  const setupOwnerSubscription = () => {
+    // Cleanup poprzednia subskrypcja
+    if (ownerSubscriptionRef.current) {
+      try {
+        ownerSubscriptionRef.current.unsubscribe()
+      } catch (error) {
+        console.error('🧹 Błąd podczas odsubskrybowania:', error)
+      }
+      ownerSubscriptionRef.current = null
+    }
+
+    console.log('🔄 Ustawiam subskrypcję na zmiany właścicieli klientów')
+    
+    try {
+      const callback = (payload: any) => {
+        console.log('📡 Real-time update otrzymany')
+        
+        if (payload.eventType === 'UPDATE' && payload.new) {
+          const { id, owner_id, first_name, last_name } = payload.new
+          
+          console.log(`📡 Zmiana właściciela: ${first_name} ${last_name} (${id}) → owner_id: ${owner_id}`)
+          
+          // Aktualizuj stan lokalny dla konkretnego klienta
+          setOwnerUpdates(prev => ({
+            ...prev,
+            [id]: {
+              owner_id,
+              timestamp: Date.now()
+            }
+          }))
+          
+          // Również zaktualizuj główną listę klientów jeśli to możliwe
+          setClients(prevClients => {
+            // Zabezpieczenie: sprawdź czy prevClients jest tablicą
+            if (!Array.isArray(prevClients)) {
+              console.warn('⚠️ prevClients nie jest tablicą w real-time callback')
+              return []
+            }
+            
+            return prevClients.map(client => 
+              client.id === id 
+                ? { ...client, owner_id }
+                : client
+            )
+          })
+          
+          // Pokaż toast o zmianie (tylko jeśli to nie aktualny użytkownik)
+          if (owner_id !== user?.id) {
+            toast({
+              title: "🔴 Real-time",
+              description: `Klient "${first_name} ${last_name}" został przypisany do innego użytkownika`,
+              duration: 4000
+            })
+          } else {
+            toast({
+              title: "🟢 Real-time", 
+              description: `Przypisałeś klienta "${first_name} ${last_name}" do siebie`,
+              duration: 2000
+            })
+          }
+        }
+      }
+      
+      // Upewnij się że callback jest funkcją
+      if (typeof callback !== 'function') {
+        console.error('❌ Callback nie jest funkcją')
+        return
+      }
+      
+      console.log('📡 Tworzę subskrypcję real-time...')
+      const subscription = clientsApi.subscribeToOwnerChanges(callback)
+      ownerSubscriptionRef.current = subscription
+      
+      console.log('✅ Subskrypcja owner changes została skonfigurowana')
+      
+      // Sprawdź po chwili czy subskrypcja jest aktywna
+      setTimeout(() => {
+        if (subscription && 'state' in subscription && (subscription as any).state === 'closed') {
+          console.warn('⚠️ Subskrypcja real-time zamknięta - używamy tylko okresowego odświeżania')
+          toast({
+            title: "Informacja",
+            description: "Real-time aktualizacje są niedostępne. Dane będą odświeżane co 10 sekund.",
+            duration: 5000
+          })
+        }
+      }, 3000)
+      
+    } catch (error) {
+      console.error('❌ Błąd konfiguracji subskrypcji owner changes:', error)
+      toast({
+        title: "Ostrzeżenie",
+        description: "Real-time aktualizacje są niedostępne. Użyj przycisku 'Odśwież' aby zobaczyć najnowsze zmiany.",
+        variant: "destructive",
+        duration: 6000
+      })
+    }
+  }
+
+  // Cleanup subskrypcji
+  const cleanupSubscription = () => {
+    if (ownerSubscriptionRef.current) {
+      try {
+        console.log('🧹 Czyszczę subskrypcję właścicieli')
+        
+        // Sprawdź czy obiekt ma metodę unsubscribe
+        if (typeof ownerSubscriptionRef.current.unsubscribe === 'function') {
+          ownerSubscriptionRef.current.unsubscribe()
+          console.log('✅ Subskrypcja została odsubskrybowana')
+        } else {
+          console.warn('⚠️ Obiekt subskrypcji nie ma metody unsubscribe')
+        }
+      } catch (error) {
+        console.error('❌ Błąd podczas odsubskrybowania:', error)
+      } finally {
+        ownerSubscriptionRef.current = null
+      }
+    }
+  }
+
+  // Setup okresowego odświeżania właścicieli (backup dla real-time)
+  const setupPeriodicRefresh = () => {
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current)
+    }
+
+    console.log('⏰ Ustawiam okresowe odświeżanie właścicieli co 10 sekund')
+    
+    refreshIntervalRef.current = setInterval(async () => {
+      if (!user || !isEditDialogOpen) return
+      
+      try {
+        console.log('🔄 Okresowe odświeżanie właścicieli...')
+        
+        // Odśwież tylko właścicieli bez pełnego przeładowania
+        const freshClients = await clientsApi.getClients(user)
+        
+        setClients(prevClients => {
+          // Zabezpieczenie: sprawdź czy prevClients i freshClients są tablicami
+          if (!Array.isArray(prevClients) || !Array.isArray(freshClients)) {
+            console.warn('⚠️ prevClients lub freshClients nie są tablicami')
+            return prevClients || []
+          }
+          
+          // Zaktualizuj tylko dane właścicieli
+          return prevClients.map(prevClient => {
+            const freshClient = freshClients.find(fc => fc.id === prevClient.id)
+            if (freshClient && (freshClient.owner_id !== prevClient.owner_id || !prevClient.owner)) {
+              console.log(`📡 Aktualizuję właściciela dla klienta ${prevClient.first_name} ${prevClient.last_name}`)
+              return {
+                ...prevClient,
+                owner_id: freshClient.owner_id,
+                owner: freshClient.owner
+              }
+            }
+            return prevClient
+          })
+        })
+      } catch (error) {
+        console.error('❌ Błąd okresowego odświeżania:', error)
+      }
+    }, 10000) // Co 10 sekund
+  }
+
+  // Cleanup interwału
+  const cleanupRefreshInterval = () => {
+    if (refreshIntervalRef.current) {
+      console.log('🧹 Czyszczę interwał odświeżania')
+      clearInterval(refreshIntervalRef.current)
+      refreshIntervalRef.current = null
     }
   }
 
@@ -310,10 +505,31 @@ export function ClientsTable() {
           note: ''
         }
       }))
+
+      // Debug: pokaż statystyki właścicieli
+      const clientsWithOwners = clientsWithUI.filter(client => client.owner)
+      const clientsWithoutOwners = clientsWithUI.filter(client => !client.owner && client.owner_id)
+      const clientsWithoutAnyOwner = clientsWithUI.filter(client => !client.owner && !client.owner_id)
+      
+      console.log(`📊 Statystyki właścicieli:
+        ✅ Z właścicielem: ${clientsWithOwners.length}
+        ❌ Bez właściciela (błędny owner_id): ${clientsWithoutOwners.length}
+        ⚪ Bez przypisania: ${clientsWithoutAnyOwner.length}
+      `)
+
+      if (clientsWithoutOwners.length > 0) {
+        console.log('⚠️ Klienci z błędnymi owner_id:', clientsWithoutOwners.map(c => ({
+          name: `${c.first_name} ${c.last_name}`,
+          owner_id: c.owner_id
+        })))
+      }
       
       setClients(clientsWithUI)
       
-      // Pobierz listę dostępnych właścicieli na podstawie uprawnień
+      // Pobierz listę wszystkich użytkowników (do wyświetlania właścicieli)
+      await loadAllUsers()
+      
+      // Pobierz listę dostępnych właścicieli na podstawie uprawnień (do filtrowania)
       await loadAvailableOwners(clientsWithUI)
       
     } catch (error) {
@@ -330,7 +546,39 @@ export function ClientsTable() {
     }
   }
 
-  // Funkcja do ładowania dostępnych właścicieli na podstawie uprawnień
+  // Funkcja do ładowania wszystkich użytkowników (do wyświetlania właścicieli)
+  const loadAllUsers = async () => {
+    if (!user) return
+
+    try {
+      console.log('👥 Ładuję wszystkich użytkowników...')
+      const users = await authApi.getAllUsersForDisplay()
+      setAllUsers(users)
+      console.log('✅ Załadowano użytkowników (bezpieczne):', users.length)
+      
+      if (users.length === 0) {
+        console.log('⚠️ UWAGA: Brak użytkowników - prawdopodobnie problem z RLS')
+        toast({
+          title: "Informacja",
+          description: "Ograniczony dostęp do listy użytkowników. Widzisz tylko właścicieli klientów JOIN-owanych z bazy.",
+          duration: 5000
+        })
+      } else if (users.length === 1 && users[0].id === user.id) {
+        console.log('⚠️ RLS: Widzisz tylko siebie - inne informacje o właścicielach z JOIN')
+        toast({
+          title: "Ograniczenia dostępu",
+          description: "Ze względu na uprawnienia widzisz tylko siebie. Informacje o innych właścicielach pobierane są z bazy klientów.",
+          duration: 5000
+        })
+      }
+    } catch (error) {
+      console.error('❌ Błąd ładowania wszystkich użytkowników:', error)
+      // Nie blokuj działania aplikacji - ustaw pustą tablicę
+      setAllUsers([])
+    }
+  }
+
+  // Funkcja do ładowania dostępnych właścicieli na podstawie uprawnień (tylko do filtrowania)
   const loadAvailableOwners = async (clientsList: any[]) => {
     if (!user) return
 
@@ -344,14 +592,15 @@ export function ClientsTable() {
           id: user.id,
           full_name: user.full_name,
           email: user.email,
-          avatar_url: user.avatar_url
+          avatar_url: user.avatar_url,
+          role: user.role
         }]
       } else {
         // Manager, szef, admin mogą filtrować po wszystkich PRACOWNIKACH
-        const allUsers = await authApi.getAllUsers()
+        const allUsersData = await authApi.getAllUsers()
         
         // Filtruj tylko użytkowników o roli 'pracownik'
-        const employees = allUsers.filter(user => user.role === 'pracownik')
+        const employees = allUsersData.filter(user => user.role === 'pracownik')
         filterOptions = employees
       }
 
@@ -451,6 +700,83 @@ export function ClientsTable() {
     }
   }
 
+  // Funkcja ręcznego odświeżania właścicieli
+  const refreshOwners = async () => {
+    if (!user) return
+    
+    try {
+      console.log('🔄 Ręczne odświeżanie właścicieli...')
+      setLoading(true)
+      
+      const freshClients = await clientsApi.getClients(user)
+      
+      // Porównaj i pokaż różnice
+      let changesFound = 0
+      setClients(prevClients => {
+        // Zabezpieczenie: sprawdź czy obie tablice są dostępne
+        if (!Array.isArray(prevClients) || !Array.isArray(freshClients)) {
+          console.warn('⚠️ prevClients lub freshClients nie są tablicami w refreshOwners')
+          return prevClients || []
+        }
+        
+        return prevClients.map(prevClient => {
+          const freshClient = freshClients.find(fc => fc.id === prevClient.id)
+          if (freshClient && freshClient.owner_id !== prevClient.owner_id) {
+            changesFound++
+            console.log(`🔄 Zmiana właściciela: ${prevClient.first_name} ${prevClient.last_name} - było: ${prevClient.owner_id} → teraz: ${freshClient.owner_id}`)
+            return {
+              ...prevClient,
+              owner_id: freshClient.owner_id,
+              owner: freshClient.owner
+            }
+          }
+          return prevClient
+        })
+      })
+      
+      toast({
+        title: "Odświeżenie zakończone",
+        description: `Znaleziono ${changesFound} zmian właścicieli`,
+      })
+      
+    } catch (error) {
+      console.error('❌ Błąd odświeżania właścicieli:', error)
+      toast({
+        title: "Błąd",
+        description: "Nie udało się odświeżyć właścicieli",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Funkcja czyszcząca nieprawidłowe owner_id
+  const cleanupInvalidOwners = async () => {
+    try {
+      setLoading(true)
+      const result = await clientsApi.cleanupInvalidOwnerIds()
+      
+      toast({
+        title: "Czyszczenie zakończone",
+        description: `Wyczyszczono ${result.cleaned} klientów z nieprawidłowymi właścicielami${result.errors.length > 0 ? `. Błędy: ${result.errors.length}` : ''}`,
+        variant: result.errors.length > 0 ? "destructive" : "default"
+      })
+
+      // Przeładuj dane po czyszczeniu
+      await loadClientsFromDatabase()
+    } catch (error) {
+      console.error('Błąd czyszczenia:', error)
+      toast({
+        title: "Błąd",
+        description: "Nie udało się wyczyścić danych właścicieli",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // Funkcja do pobierania historii zmian
   const fetchClientHistory = async (clientId: string) => {
     setLoadingHistory(true)
@@ -467,8 +793,25 @@ export function ClientsTable() {
         return
       }
       
+      // Pobierz historię
       const history = await activityLogsApi.getClientHistory(clientId)
       setClientHistory(history)
+      
+      // Również odśwież aktualnego właściciela klienta w dialogu edycji
+      if (editingClient && editingClient.id === clientId) {
+        try {
+          const currentOwner = await getCurrentOwner(clientId)
+          if (currentOwner) {
+            setEditingClient((prev: any) => ({
+              ...prev,
+              owner: currentOwner,
+              owner_id: currentOwner.id
+            }))
+          }
+        } catch (error) {
+          console.error('Błąd odświeżania właściciela w dialogu:', error)
+        }
+      }
       
       // Automatycznie przewiń do dołu historii po odświeżeniu
       setTimeout(() => {
@@ -564,6 +907,28 @@ export function ClientsTable() {
     }
   }, [user])
 
+  // Setup subskrypcji real-time i okresowego odświeżania
+  useEffect(() => {
+    if (user) {
+      setupOwnerSubscription()
+      setupPeriodicRefresh()
+    }
+    
+    // Cleanup przy unmount
+    return () => {
+      cleanupSubscription()
+      cleanupRefreshInterval()
+    }
+  }, [user])
+
+  // Cleanup subskrypcji przy zmianie komponentu
+  useEffect(() => {
+    return () => {
+      cleanupSubscription()
+      cleanupRefreshInterval()
+    }
+  }, [])
+
   // Funkcja do zapisywania zmian klienta
   const handleSave = async () => {
     if (!editingClient || !user) return
@@ -581,6 +946,7 @@ export function ClientsTable() {
         notes: editingClient.notes,
         website: editingClient.website,
         status: editingClient.status,
+        reminder: editingClient.reminder, // Dodaj przypomnienie
       }
       
       const updatedClient = await clientsApi.updateClient(editingClient.id, clientData, user)
@@ -726,7 +1092,7 @@ export function ClientsTable() {
     setEditingClient((prev: any) => ({
       ...prev,
       reminder: {
-        ...prev.reminder,
+        ...prev?.reminder,
         [field]: value
       }
     }))
@@ -751,21 +1117,169 @@ export function ClientsTable() {
 
   const handleUploadFiles = () => {
     setIsUploadDialogOpen(true)
+    setSelectedFile(null)
+    setDragActive(false)
+    setIsUploading(false)
   }
 
   const handleCancelUpload = () => {
     setIsUploadDialogOpen(false)
+    setSelectedFile(null)
+    setDragActive(false)
+    setIsUploading(false)
+    setUploadProgress({ current: 0, total: 100, status: '' })
+    setImportResults(null)
+    setColumnAnalysis(null)
   }
 
-  const handleFileUpload = () => {
-    // TODO: Implementacja logiki wgrywania plików
-    alert('Funkcjonalność wgrywania plików będzie dodana później')
-    setIsUploadDialogOpen(false)
+  // Obsługa wyboru pliku
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (files && files.length > 0) {
+      const file = files[0]
+      if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
+        setSelectedFile(file)
+        setColumnAnalysis(null) // Reset analiza
+        
+        try {
+          // Szybka analiza nagłówków
+          const text = await file.text()
+          const { headers } = csvImportApi.parseCSV(text)
+          const mapping = csvImportApi.mapHeaders(headers)
+          const analysis = csvImportApi.analyzeColumns(mapping, headers)
+          
+          setColumnAnalysis(analysis)
+          
+          toast({
+            title: "Plik wybrany",
+            description: `${file.name} - ${analysis.found.length} kolumn znalezionych`,
+          })
+        } catch (error) {
+          console.error('Błąd analizy pliku:', error)
+          toast({
+            title: "Plik wybrany",
+            description: `${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+          })
+        }
+      } else {
+        toast({
+          title: "Nieprawidłowy format pliku",
+          description: "Proszę wybrać plik CSV (.csv)",
+          variant: "destructive"
+        })
+      }
+    }
+  }
+
+  // Obsługa drag & drop
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true)
+    } else if (e.type === "dragleave") {
+      setDragActive(false)
+    }
+  }
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(false)
+    
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0]
+      if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
+        setSelectedFile(file)
+        setColumnAnalysis(null) // Reset analiza
+        
+        try {
+          // Szybka analiza nagłówków
+          const text = await file.text()
+          const { headers } = csvImportApi.parseCSV(text)
+          const mapping = csvImportApi.mapHeaders(headers)
+          const analysis = csvImportApi.analyzeColumns(mapping, headers)
+          
+          setColumnAnalysis(analysis)
+          
+          toast({
+            title: "Plik upuszczony",
+            description: `${file.name} - ${analysis.found.length} kolumn znalezionych`,
+          })
+        } catch (error) {
+          console.error('Błąd analizy pliku:', error)
+          toast({
+            title: "Plik upuszczony",
+            description: `${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+          })
+        }
+      } else {
+        toast({
+          title: "Nieprawidłowy format pliku",
+          description: "Proszę wybrać plik CSV (.csv)",
+          variant: "destructive"
+        })
+      }
+    }
+  }
+
+  const handleFileUpload = async () => {
+    if (!selectedFile || !user) {
+      toast({
+        title: "Błąd",
+        description: "Nie wybrano pliku lub brak zalogowanego użytkownika",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setIsUploading(true)
+    setImportResults(null)
+    
+    try {
+      // Import CSV z progress callback
+      const results = await csvImportApi.importCSV(
+        selectedFile, 
+        user, 
+        (progress) => {
+          setUploadProgress(progress)
+        }
+      )
+      
+      // Pokaż rezultaty
+      setImportResults(results)
+      
+      // Toast z rezultatami
+      const successMessage = `Zaimportowano ${results.success} klientów`
+      const errorMessage = results.errors.length > 0 ? `, ${results.errors.length} błędów` : ''
+      
+      toast({
+        title: results.errors.length === 0 ? "Sukces!" : "Import zakończony z błędami",
+        description: successMessage + errorMessage,
+        variant: results.errors.length === 0 ? "default" : "destructive"
+      })
+      
+      // Odśwież listę klientów jeśli były sukcesy
+      if (results.success > 0) {
+        await loadClientsFromDatabase()
+      }
+      
+    } catch (error) {
+      console.error('❌ Błąd import CSV:', error)
+      toast({
+        title: "Błąd importu",
+        description: error instanceof Error ? error.message : "Nieznany błąd importu",
+        variant: "destructive"
+      })
+      setUploadProgress({ current: 0, total: 100, status: 'Błąd importu' })
+    } finally {
+      setIsUploading(false)
+    }
   }
 
   // Funkcja do formatowania daty przypomnienia
   const formatReminderDate = (reminder: any) => {
-    if (!reminder.enabled || !reminder.date) return null
+    if (!reminder || !reminder.enabled || !reminder.date) return null
     const date = new Date(reminder.date + 'T' + reminder.time)
     return date.toLocaleDateString('pl-PL') + ' ' + reminder.time
   }
@@ -789,8 +1303,57 @@ export function ClientsTable() {
     setSelectedClientForDetails(null)
   }
 
+  // Funkcja do obsługi aktualizacji klienta z popup
+  const handleClientUpdateFromPopup = (updatedClient: any) => {
+    // Aktualizuj klienta w lokalnym stanie
+    setClients(prevClients => 
+      prevClients.map(client => 
+        client.id === updatedClient.id ? updatedClient : client
+      )
+    )
+    
+    // Aktualizuj wybranego klienta jeśli to ten sam
+    if (selectedClientForDetails?.id === updatedClient.id) {
+      setSelectedClientForDetails(updatedClient)
+    }
+  }
+
   // Sprawdź czy jakiekolwiek filtry są aktywne
   const hasActiveFilters = searchQuery.trim() !== '' || ownerFilter !== 'all' || statusFilter !== 'all'
+
+  // Funkcja do pobierania aktualnego właściciela klienta
+  const getCurrentOwner = async (clientId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('clients')
+        .select(`
+          owner_id,
+          owner:users!owner_id (
+            id,
+            full_name,
+            email,
+            avatar_url,
+            role
+          )
+        `)
+        .eq('id', clientId)
+        .single()
+      
+      if (error) throw error
+      
+      // Supabase JOIN może zwrócić tablicę lub null - obsłuż oba przypadki
+      if (data?.owner) {
+        // Jeśli owner jest tablicą, weź pierwszy element
+        const owner = Array.isArray(data.owner) ? data.owner[0] : data.owner
+        return owner || null
+      }
+      
+      return null
+    } catch (error) {
+      console.error('Błąd pobierania właściciela:', error)
+      return null
+    }
+  }
 
   // Funkcja do formatowania daty dla historii
   const formatHistoryDate = (timestamp: string) => {
@@ -821,18 +1384,52 @@ export function ClientsTable() {
     }
   }
 
-  const handleEdit = (client: any) => {
+  const handleEdit = async (client: any) => {
     // Sprawdź uprawnienia przed edycją
     if (!user || !permissionsApi.canEdit(client, user)) {
       alert('Nie masz uprawnień do edycji tego klienta')
       return
     }
     
-    setEditingClient({ ...client })
-    setIsEditDialogOpen(true)
-    
-    // Pobierz historię zmian po otwarciu dialogu
-    fetchClientHistory(client.id)
+    try {
+      console.log(`🎯 Przypisuję klienta ${client.id} do edycji przez użytkownika ${user.id}`)
+      
+      // Automatycznie przypisz klienta do aktualnego użytkownika
+      const updatedClient = await clientsApi.claimClientForEditing(client.id, user.id)
+      
+      // Ustaw zaktualizowanego klienta w edytorze z domyślnym obiektem reminder
+      setEditingClient({
+        ...updatedClient,
+        reminder: (updatedClient as any).reminder || {
+          enabled: false,
+          date: '',
+          time: '',
+          note: ''
+        }
+      })
+      setIsEditDialogOpen(true)
+      
+      // WAŻNE: Odśwież listę klientów od razu aby wszyscy widzieli zmianę właściciela
+      setTimeout(() => {
+        loadClientsFromDatabase()
+      }, 500)
+      
+      // Pobierz historię zmian po otwarciu dialogu
+      fetchClientHistory(client.id)
+      
+      toast({
+        title: "Edycja rozpoczęta",
+        description: `Klient "${client.first_name} ${client.last_name}" został przypisany do Ciebie do edycji`,
+      })
+      
+    } catch (error) {
+      console.error('❌ Błąd przypisywania klienta do edycji:', error)
+      toast({
+        title: "Błąd",
+        description: "Nie udało się przypisać klienta do edycji",
+        variant: "destructive"
+      })
+    }
   }
 
   return (
@@ -913,14 +1510,17 @@ export function ClientsTable() {
             </Button>
           )}
           
-          <Button 
-            onClick={handleUploadFiles}
-            variant="outline" 
-            className="border-slate-600 text-slate-300 hover:bg-slate-700"
-          >
-            <Upload className="h-4 w-4 mr-2" />
-            Wgraj plik
-          </Button>
+          {/* Przycisk "Wgraj plik" tylko dla manager, szef i admin */}
+          {user?.role && ['manager', 'szef', 'admin'].includes(user.role) && (
+            <Button 
+              onClick={handleUploadFiles}
+              variant="outline" 
+              className="border-slate-600 text-slate-300 hover:bg-slate-700"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Wgraj plik
+            </Button>
+          )}
           <Button 
             onClick={handleAddClient}
             className="bg-cyan-500 hover:bg-cyan-600"
@@ -960,11 +1560,14 @@ export function ClientsTable() {
             </div>
             <div className="flex items-center gap-4">
               <Button
-                onClick={testDatabaseConnection}
+                onClick={refreshOwners}
                 variant="outline"
-                className="border-blue-600 text-blue-400 hover:bg-blue-500/20"
+                className="border-cyan-600 text-cyan-400 hover:bg-cyan-500/20"
+                disabled={loading}
+                title="Odśwież właścicieli klientów"
               >
-                Test DB
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Odśwież
               </Button>
             </div>
           </div>
@@ -1071,60 +1674,153 @@ export function ClientsTable() {
                         </TableCell>
                         <TableCell>
                           <TooltipProvider>
-                            {client.owner ? (
-                              <Tooltip>
-                                <TooltipTrigger>
-                                  <Avatar className="h-8 w-8 cursor-pointer hover:ring-2 hover:ring-cyan-400/50 transition-all">
-                                    <AvatarImage 
-                                      src={getAvatarUrl(client.owner.avatar_url) || '/placeholder-user.jpg'} 
-                                      alt={client.owner.full_name}
-                                      className="object-cover"
-                                    />
-                                    <AvatarFallback className="bg-slate-700 text-slate-300 text-xs">
-                                      {client.owner.full_name
-                                        ?.split(' ')
-                                        .map((name: string) => name[0])
-                                        .join('')
-                                        .toUpperCase()
-                                        .slice(0, 2) || '?'}
-                                    </AvatarFallback>
-                                  </Avatar>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <div className="text-sm">
-                                    <div className="font-medium">{client.owner.full_name}</div>
-                                    <div className="text-slate-400">{client.owner.email}</div>
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              <Tooltip>
-                                <TooltipTrigger>
-                                  <Avatar className="h-8 w-8 cursor-pointer">
-                                    <AvatarFallback className="bg-slate-600 text-slate-400 text-xs">
-                                      ?
-                                    </AvatarFallback>
-                                  </Avatar>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <div className="text-sm">
-                                    {client.owner_id ? (
-                                      <>
-                                        <div className="text-red-400">Brak danych właściciela</div>
-                                        <div className="text-slate-400">ID: {client.owner_id}</div>
-                                      </>
-                                    ) : (
-                                      <div className="text-slate-400">Klient nie ma przypisanego właściciela</div>
-                                    )}
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            )}
-                            {client.owner_id && !client.owner && (
-                              <div className="text-xs text-red-400 mt-1">
-                                DEBUG: owner_id={client.owner_id} ale brak owner obiektu
-                              </div>
-                            )}
+                            {(() => {
+                              // Używaj real-time aktualizacji jeśli dostępne
+                              const ownerUpdate = ownerUpdates[client.id]
+                              const effectiveOwnerId = ownerUpdate?.owner_id ?? client.owner_id
+                              
+                              // Inteligentne dopasowanie właściciela - PREFERUJ DANE Z JOIN-A
+                              let effectiveOwner = null
+                              
+                              // PRIORYTET 1: Dane z JOIN-a (najbardziej aktualne i niezależne od RLS)
+                              if (client.owner) {
+                                console.log(`✅ Używam właściciela z JOIN: ${client.owner.full_name} dla klienta ${client.first_name} ${client.last_name}`)
+                                effectiveOwner = client.owner
+                              }
+                              // PRIORYTET 2: Real-time update ze zmianą owner_id
+                              else if (effectiveOwnerId && effectiveOwnerId !== client.owner_id) {
+                                console.log(`🔍 Real-time zmiana właściciela ${effectiveOwnerId} dla klienta ${client.first_name} ${client.last_name}`)
+                                
+                                // Szukaj w allUsers
+                                if (Array.isArray(allUsers) && allUsers.length > 0) {
+                                  effectiveOwner = allUsers.find(owner => owner.id === effectiveOwnerId)
+                                  if (effectiveOwner) {
+                                    console.log(`✅ Znaleziono w allUsers: ${effectiveOwner.full_name}`)
+                                  }
+                                }
+                                
+                                // Fallback - aktualny użytkownik
+                                if (!effectiveOwner && effectiveOwnerId === user?.id && user) {
+                                  console.log(`🔄 Fallback: używam danych aktualnego użytkownika`)
+                                  effectiveOwner = {
+                                    id: user.id,
+                                    full_name: user.full_name,
+                                    email: user.email,
+                                    avatar_url: user.avatar_url,
+                                    role: user.role
+                                  }
+                                }
+                              }
+                              // PRIORYTET 3: Szukanie w allUsers na podstawie owner_id (gdy brak JOIN-a)
+                              else if (effectiveOwnerId && !client.owner) {
+                                console.log(`🔍 Brak JOIN - szukam ${effectiveOwnerId} w allUsers`)
+                                
+                                if (Array.isArray(allUsers) && allUsers.length > 0) {
+                                  effectiveOwner = allUsers.find(owner => owner.id === effectiveOwnerId)
+                                  if (effectiveOwner) {
+                                    console.log(`✅ Znaleziono w allUsers (bez JOIN): ${effectiveOwner.full_name}`)
+                                  } else {
+                                    console.log(`❌ Nie znaleziono ${effectiveOwnerId} w allUsers - może RLS blokuje`)
+                                  }
+                                } else {
+                                  console.log(`⚠️ allUsers puste/niedostępne - prawdopodobnie RLS`)
+                                }
+                                
+                                // Fallback - aktualny użytkownik
+                                if (!effectiveOwner && effectiveOwnerId === user?.id && user) {
+                                  console.log(`🔄 Fallback: używam danych aktualnego użytkownika`)
+                                  effectiveOwner = {
+                                    id: user.id,
+                                    full_name: user.full_name,
+                                    email: user.email,
+                                    avatar_url: user.avatar_url,
+                                    role: user.role
+                                  }
+                                }
+                              }
+                              
+                              return effectiveOwner ? (
+                                <Tooltip>
+                                  <TooltipTrigger>
+                                    <div className="relative">
+                                      <Avatar className="h-8 w-8 cursor-pointer hover:ring-2 hover:ring-cyan-400/50 transition-all">
+                                        <AvatarImage 
+                                          src={getAvatarUrl(effectiveOwner.avatar_url) || '/placeholder-user.jpg'} 
+                                          alt={effectiveOwner.full_name}
+                                          className="object-cover"
+                                        />
+                                        <AvatarFallback className="bg-slate-700 text-slate-300 text-xs">
+                                          {effectiveOwner.full_name
+                                            ?.split(' ')
+                                            .map((name: string) => name[0])
+                                            .join('')
+                                            .toUpperCase()
+                                            .slice(0, 2) || '?'}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      {/* Wskaźnik real-time update */}
+                                      {ownerUpdate && Date.now() - ownerUpdate.timestamp < 5000 && (
+                                        <div className="absolute -top-1 -right-1 w-3 h-3 bg-cyan-400 rounded-full animate-pulse border-2 border-slate-800"></div>
+                                      )}
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <div className="text-sm">
+                                      <div className="font-medium">{effectiveOwner.full_name}</div>
+                                      <div className="text-slate-400">{effectiveOwner.email}</div>
+                                      <div className="text-xs text-slate-500 mt-1">Rola: {effectiveOwner.role}</div>
+                                      {effectiveOwner.id === user?.id && (
+                                        <div className="text-xs text-cyan-400 mt-1">🎯 Edytujesz tego klienta</div>
+                                      )}
+                                      {ownerUpdate && (
+                                        <div className="text-xs text-cyan-400 mt-1">📡 Zaktualizowano na żywo</div>
+                                      )}
+                                      {/* Informacja o ostatnim edytorze */}
+                                      {client.last_edited_by_name && (
+                                        <div className="border-t border-slate-600 pt-2 mt-2">
+                                          <div className="text-xs text-slate-500">Ostatnio edytowany przez:</div>
+                                          <div className="text-xs text-slate-300 font-medium">{client.last_edited_by_name}</div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : (
+                                <Tooltip>
+                                  <TooltipTrigger>
+                                    <div className="flex items-center gap-2">
+                                      <Avatar className="h-8 w-8 cursor-pointer">
+                                        <AvatarFallback className={effectiveOwnerId ? "bg-red-600 text-red-200 text-xs" : "bg-slate-600 text-slate-400 text-xs"}>
+                                          {effectiveOwnerId ? "!" : "?"}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      {effectiveOwnerId && (
+                                        <span className="text-xs text-orange-400">Niewidoczny</span>
+                                      )}
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <div className="text-sm">
+                                      {effectiveOwnerId ? (
+                                        <>
+                                          <div className="text-orange-400 font-medium">⚠️ Właściciel niewidoczny</div>
+                                          <div className="text-slate-400">Właściciel istnieje ale nie masz dostępu</div>
+                                          <div className="text-xs text-slate-500 mt-1">ID: {effectiveOwnerId}</div>
+                                          <div className="text-xs text-slate-500 mt-1">Dostępnych użytkowników: {allUsers.length}</div>
+                                          {allUsers.length <= 1 ? (
+                                            <div className="text-xs text-blue-400 mt-1">🔒 Ograniczenie RLS - widzisz tylko siebie</div>
+                                          ) : (
+                                            <div className="text-xs text-blue-400 mt-1">💡 Kliknij "Odśwież" aby zaktualizować</div>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <div className="text-slate-400">Klient nie ma przypisanego właściciela</div>
+                                      )}
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              )
+                            })()}
                           </TooltipProvider>
                         </TableCell>
                         <TableCell>
@@ -1272,114 +1968,186 @@ export function ClientsTable() {
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-7xl max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader className="flex-shrink-0 border-b border-slate-600 pb-4">
-            <DialogTitle className="text-white flex items-center gap-2">
-              <Edit className="h-5 w-5" />
-              Edytuj klienta: {editingClient?.first_name} {editingClient?.last_name}
-            </DialogTitle>
+            <div className="flex items-center justify-between">
+              <DialogTitle className="text-white flex items-center gap-3">
+                <Edit className="h-5 w-5 text-cyan-400" />
+                <div>
+                  <span className="text-xl font-semibold">
+                    {editingClient?.first_name} {editingClient?.last_name}
+                  </span>
+                  <div className="text-sm text-slate-400 font-normal">
+                    {editingClient?.company_name}
+                  </div>
+                </div>
+              </DialogTitle>
+              
+              {/* Status badge w nagłówku */}
+              {editingClient?.status && (
+                <Badge className={`${statusColors[editingClient.status as keyof typeof statusColors] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'} text-sm`}>
+                  {editingClient.status}
+                </Badge>
+              )}
+            </div>
+            
+            {/* Tylko ostrzeżenie o konflikcie edycji */}
+            {editingClient?.owner && editingClient.owner.id !== user?.id && (
+              <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                <div className="flex items-center gap-2 text-yellow-400">
+                  <User className="h-4 w-4" />
+                  <span className="text-sm font-medium">
+                    Obecnie edytowany przez: {editingClient.owner.full_name}
+                  </span>
+                  <Badge className="text-xs bg-yellow-500/20 text-yellow-400">
+                    {editingClient.owner.role}
+                  </Badge>
+                </div>
+                <p className="text-xs text-yellow-300 mt-1">
+                  ⚠️ Ten klient jest obecnie przypisany do innego użytkownika. Twoje zmiany mogą konfliktować z jego edycją.
+                </p>
+              </div>
+            )}
           </DialogHeader>
           
           {editingClient && (
             <div className="flex-1 overflow-y-auto py-4 px-1 custom-scrollbar">
               <div className="pr-3">
                 <div className="grid grid-cols-3 gap-6">
-                  {/* Kolumna 1: Podstawowe dane */}
-                  <div className="space-y-4">
-                    <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2">Podstawowe informacje</h3>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="first_name" className="text-slate-300">Imię</Label>
-                        <Input
-                          id="first_name"
-                          value={editingClient.first_name}
-                          onChange={(e) => handleInputChange('first_name', e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white"
-                        />
+                  {/* Kolumna 1: Dane klienta */}
+                  <div className="space-y-6">
+                    {/* Dane osobowe */}
+                    <div className="space-y-4">
+                      <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2 flex items-center gap-2">
+                        <User className="h-4 w-4" />
+                        Dane osobowe
+                      </h3>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="first_name" className="text-slate-300">Imię</Label>
+                          <Input
+                            id="first_name"
+                            value={editingClient.first_name}
+                            onChange={(e) => handleInputChange('first_name', e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white"
+                          />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <Label htmlFor="last_name" className="text-slate-300">Nazwisko</Label>
+                          <Input
+                            id="last_name"
+                            value={editingClient.last_name}
+                            onChange={(e) => handleInputChange('last_name', e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white"
+                          />
+                        </div>
                       </div>
+                    </div>
+
+                    {/* Dane firmowe */}
+                    <div className="space-y-4">
+                      <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2 flex items-center gap-2">
+                        <Building2 className="h-4 w-4" />
+                        Dane firmowe
+                      </h3>
+                      
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="company_name" className="text-slate-300">Nazwa firmy</Label>
+                          <Input
+                            id="company_name"
+                            value={editingClient.company_name}
+                            onChange={(e) => handleInputChange('company_name', e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white"
+                          />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <Label htmlFor="nip" className="text-slate-300">NIP</Label>
+                          <Input
+                            id="nip"
+                            value={editingClient.nip}
+                            onChange={(e) => handleInputChange('nip', e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    
+
+                    {/* Status */}
+                    <div className="space-y-4">
+                      <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2 flex items-center gap-2">
+                        <Settings className="h-4 w-4" />
+                        Status klienta
+                      </h3>
                       
                       <div className="space-y-2">
-                        <Label htmlFor="last_name" className="text-slate-300">Nazwisko</Label>
-                        <Input
-                          id="last_name"
-                          value={editingClient.last_name}
-                          onChange={(e) => handleInputChange('last_name', e.target.value)}
-                          className="bg-slate-700 border-slate-600 text-white"
-                        />
+                        <Label htmlFor="status" className="text-slate-300">Aktualny status</Label>
+                        <Select 
+                          value={editingClient.status} 
+                          onValueChange={(value) => handleInputChange('status', value)}
+                        >
+                          <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-700 border-slate-600">
+                            {statusOptions.map((status) => (
+                              <SelectItem key={status} value={status} className="text-white hover:bg-slate-600">
+                                {status}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <Label htmlFor="company_name" className="text-slate-300">Firma</Label>
-                      <Input
-                        id="company_name"
-                        value={editingClient.company_name}
-                        onChange={(e) => handleInputChange('company_name', e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <Label htmlFor="nip" className="text-slate-300">NIP</Label>
-                      <Input
-                        id="nip"
-                        value={editingClient.nip}
-                        onChange={(e) => handleInputChange('nip', e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <Label htmlFor="phone" className="text-slate-300">Telefon</Label>
-                      <Input
-                        id="phone"
-                        value={editingClient.phone}
-                        onChange={(e) => handleInputChange('phone', e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <Label htmlFor="email" className="text-slate-300">Email</Label>
-                      <Input
-                        id="email"
-                        value={editingClient.email}
-                        onChange={(e) => handleInputChange('email', e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <Label htmlFor="website" className="text-slate-300">Strona WWW</Label>
-                      <Input
-                        id="website"
-                        value={editingClient.website}
-                        onChange={(e) => handleInputChange('website', e.target.value)}
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <Label htmlFor="status" className="text-slate-300">Status</Label>
-                      <Select 
-                        value={editingClient.status} 
-                        onValueChange={(value) => handleInputChange('status', value)}
-                      >
-                        <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-slate-700 border-slate-600">
-                          {statusOptions.map((status) => (
-                            <SelectItem key={status} value={status} className="text-white hover:bg-slate-600">
-                              {status}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
                     </div>
                   </div>
 
                   {/* Kolumna 2: Notatki i przypomnienia */}
                   <div className="space-y-4">
+{/* Kontakt */}
+<div className="space-y-4">
+                      <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2 flex items-center gap-2">
+                        <Phone className="h-4 w-4" />
+                        Kontakt
+                      </h3>
+                      
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="phone" className="text-slate-300">Telefon</Label>
+                          <Input
+                            id="phone"
+                            value={editingClient.phone}
+                            onChange={(e) => handleInputChange('phone', e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white"
+                          />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <Label htmlFor="email" className="text-slate-300">Email</Label>
+                          <Input
+                            id="email"
+                            value={editingClient.email}
+                            onChange={(e) => handleInputChange('email', e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white"
+                          />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <Label htmlFor="website" className="text-slate-300">Strona WWW</Label>
+                          <Input
+                            id="website"
+                            value={editingClient.website}
+                            onChange={(e) => handleInputChange('website', e.target.value)}
+                            className="bg-slate-700 border-slate-600 text-white"
+                            placeholder="www.firma.pl"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+
                     <h3 className="font-semibold text-slate-300 border-b border-slate-600 pb-2">Notatki i przypomnienia</h3>
                     
                     <div className="space-y-2">
@@ -1398,7 +2166,7 @@ export function ClientsTable() {
                       <div className="flex items-center gap-2">
                         <Checkbox
                           id="reminderEnabled"
-                          checked={editingClient.reminder.enabled}
+                          checked={editingClient?.reminder?.enabled || false}
                           onCheckedChange={(checked) => handleReminderChange('enabled', checked)}
                           className="border-slate-600"
                         />
@@ -1408,14 +2176,14 @@ export function ClientsTable() {
                         </Label>
                       </div>
 
-                      {editingClient.reminder.enabled && (
+                      {editingClient?.reminder?.enabled && (
                         <div className="grid grid-cols-2 gap-4 ml-6">
                           <div className="space-y-2">
                             <Label htmlFor="reminderDate" className="text-slate-300">Data</Label>
                             <Input
                               id="reminderDate"
                               type="date"
-                              value={editingClient.reminder.date}
+                              value={editingClient?.reminder?.date || ''}
                               onChange={(e) => handleReminderChange('date', e.target.value)}
                               className="bg-slate-700 border-slate-600 text-white"
                             />
@@ -1426,7 +2194,7 @@ export function ClientsTable() {
                             <Input
                               id="reminderTime"
                               type="time"
-                              value={editingClient.reminder.time}
+                              value={editingClient?.reminder?.time || ''}
                               onChange={(e) => handleReminderChange('time', e.target.value)}
                               className="bg-slate-700 border-slate-600 text-white"
                             />
@@ -1436,7 +2204,7 @@ export function ClientsTable() {
                             <Label htmlFor="reminderNote" className="text-slate-300">Notatka przypomnienia</Label>
                             <Input
                               id="reminderNote"
-                              value={editingClient.reminder.note}
+                              value={editingClient?.reminder?.note || ''}
                               onChange={(e) => handleReminderChange('note', e.target.value)}
                               className="bg-slate-700 border-slate-600 text-white"
                               placeholder="O czym przypomnieć?"
@@ -1807,37 +2575,194 @@ export function ClientsTable() {
           <DialogHeader>
             <DialogTitle className="text-white flex items-center gap-2">
               <Upload className="h-5 w-5" />
-              Wgraj plik z klientami
+              Wgraj plik CSV z klientami
             </DialogTitle>
           </DialogHeader>
           
           <div className="py-6">
-            <div className="border-2 border-dashed border-slate-600 rounded-lg p-8 text-center">
-              <FileSpreadsheet className="h-12 w-12 text-slate-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-white mb-2">Przeciągnij plik tutaj</h3>
-              <p className="text-slate-400 mb-4">lub kliknij aby wybrać plik</p>
-              <Button 
-                variant="outline" 
-                className="border-slate-600 text-slate-300 hover:bg-slate-700"
-              >
-                Wybierz plik
-              </Button>
+            {/* Obszar drag & drop */}
+            <div 
+              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+                dragActive 
+                  ? 'border-cyan-400 bg-cyan-500/10' 
+                  : selectedFile 
+                    ? 'border-green-500 bg-green-500/10'
+                    : 'border-slate-600'
+              }`}
+              onDragEnter={handleDrag}
+              onDragLeave={handleDrag}
+              onDragOver={handleDrag}
+              onDrop={handleDrop}
+            >
+              {selectedFile ? (
+                // Pokazuj wybrany plik
+                <div>
+                  <FileSpreadsheet className="h-12 w-12 text-green-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-white mb-2">Plik wybrany</h3>
+                  <p className="text-green-400 mb-2 font-medium">{selectedFile.name}</p>
+                  <p className="text-slate-400 text-sm mb-4">
+                    Rozmiar: {(selectedFile.size / 1024).toFixed(1)} KB
+                  </p>
+                  <Button 
+                    variant="outline" 
+                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                    onClick={() => setSelectedFile(null)}
+                  >
+                    Zmień plik
+                  </Button>
+                </div>
+              ) : (
+                // Obszar wyboru pliku
+                <div>
+                  <FileSpreadsheet className={`h-12 w-12 mx-auto mb-4 ${dragActive ? 'text-cyan-400' : 'text-slate-400'}`} />
+                  <h3 className={`text-lg font-medium mb-2 ${dragActive ? 'text-cyan-400' : 'text-white'}`}>
+                    {dragActive ? 'Upuść plik tutaj' : 'Przeciągnij plik CSV tutaj'}
+                  </h3>
+                  <p className="text-slate-400 mb-4">lub kliknij aby wybrać plik</p>
+                  
+                  {/* Hidden file input */}
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                    id="file-upload"
+                  />
+                  
+                  <Button 
+                    variant="outline" 
+                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
+                    onClick={() => document.getElementById('file-upload')?.click()}
+                  >
+                    Wybierz plik CSV
+                  </Button>
+                </div>
+              )}
             </div>
             
-            <div className="mt-4 text-sm text-slate-400">
-              <p className="mb-2">Obsługiwane formaty:</p>
-              <ul className="list-disc list-inside space-y-1">
-                <li>Excel (.xlsx, .xls)</li>
-                <li>CSV (.csv)</li>
-                <li>JSON (.json)</li>
-              </ul>
-            </div>
+            {/* Analiza kolumn po wybraniu pliku */}
+            {columnAnalysis && (
+              <div className="mt-4 space-y-3">
+                <h4 className="text-sm font-medium text-white">Analiza kolumn w pliku:</h4>
+                
+                {/* Znalezione kolumny */}
+                {columnAnalysis.found.length > 0 && (
+                  <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
+                    <p className="text-green-400 text-sm font-medium mb-2">✅ Znalezione kolumny:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {columnAnalysis.found.map((col, index) => (
+                        <span key={index} className="px-2 py-1 bg-green-500/20 text-green-300 text-xs rounded">
+                          {col}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Brakujące opcjonalne kolumny */}
+                {columnAnalysis.optional.length > 0 && (
+                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                    <p className="text-yellow-400 text-sm font-medium mb-2">⚪ Będzie "brak informacji":</p>
+                    <div className="flex flex-wrap gap-1">
+                      {columnAnalysis.optional.map((col, index) => (
+                        <span key={index} className="px-2 py-1 bg-yellow-500/20 text-yellow-300 text-xs rounded">
+                          {col}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Brakujące wymagane kolumny */}
+                {columnAnalysis.missing.length > 0 && (
+                  <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                    <p className="text-red-400 text-sm font-medium mb-2">❌ Brakujące wymagane:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {columnAnalysis.missing.map((col, index) => (
+                        <span key={index} className="px-2 py-1 bg-red-500/20 text-red-300 text-xs rounded">
+                          {col}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {/* Informacje o formacie (gdy nie ma analizy) */}
+            {!columnAnalysis && (
+              <div className="mt-4 text-sm text-slate-400">
+                <p className="mb-2">Wymagane kolumny w pliku CSV:</p>
+                <ul className="list-disc list-inside space-y-1">
+                  <li>Firma (company_name, firma, nazwa)</li>
+                </ul>
+                <p className="mt-2 text-xs">Opcjonalne: Imię, Nazwisko, Telefon, Email, NIP, Strona WWW, Notatki, Status</p>
+                <p className="mt-1 text-xs text-slate-500">Pola bez wartości będą wypełnione jako "brak informacji"</p>
+              </div>
+            )}
             
             <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
               <p className="text-blue-400 text-sm">
-                💡 Upewnij się, że plik zawiera kolumny: Imię, Nazwisko, Firma, NIP, Telefon, Email
+                💡 Pierwszy wiersz pliku powinien zawierać nazwy kolumn. Obsługiwane separatory: przecinek (,)
               </p>
             </div>
+            
+            {/* Progress bar podczas uploadu */}
+            {isUploading && (
+              <div className="mt-4 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-300">Progress:</span>
+                  <span className="text-cyan-400">{uploadProgress.current}%</span>
+                </div>
+                <Progress 
+                  value={uploadProgress.current} 
+                  className="w-full"
+                />
+                <p className="text-sm text-slate-400">{uploadProgress.status}</p>
+              </div>
+            )}
+            
+            {/* Rezultaty importu */}
+            {importResults && (
+              <div className="mt-4 space-y-3">
+                <div className="p-4 bg-slate-700 rounded-lg border border-slate-600">
+                  <h4 className="font-medium text-white mb-2">Rezultaty importu:</h4>
+                  
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-green-400">✅ Pomyślnie zaimportowano:</span>
+                      <span className="text-green-400 font-medium">{importResults.success}</span>
+                    </div>
+                    
+                    {importResults.errors.length > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-red-400">❌ Błędy:</span>
+                        <span className="text-red-400 font-medium">{importResults.errors.length}</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Lista błędów */}
+                  {importResults.errors.length > 0 && (
+                    <div className="mt-3 max-h-32 overflow-y-auto">
+                      <p className="text-sm text-slate-400 mb-2">Szczegóły błędów:</p>
+                      <div className="space-y-1">
+                        {importResults.errors.slice(0, 5).map((error, index) => (
+                          <div key={index} className="text-xs text-red-400 bg-red-500/10 p-2 rounded">
+                            Wiersz {error.row}: {error.error}
+                          </div>
+                        ))}
+                        {importResults.errors.length > 5 && (
+                          <div className="text-xs text-slate-400">
+                            ... i {importResults.errors.length - 5} więcej błędów
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           
           <div className="flex justify-end gap-2 pt-4">
@@ -1845,15 +2770,31 @@ export function ClientsTable() {
               variant="outline"
               onClick={handleCancelUpload}
               className="border-slate-600 text-slate-300 hover:bg-slate-700"
+              disabled={isUploading}
             >
               Anuluj
             </Button>
             <Button
               onClick={handleFileUpload}
-              className="bg-blue-500 hover:bg-blue-600 text-white"
+              className="bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!selectedFile || isUploading || Boolean(columnAnalysis && columnAnalysis.missing.length > 0)}
+              title={
+                (columnAnalysis && columnAnalysis.missing.length > 0) 
+                  ? `Brakuje wymaganych kolumn: ${columnAnalysis.missing.join(', ')}`
+                  : undefined
+              }
             >
-              <Upload className="h-4 w-4 mr-2" />
-              Wgraj plik
+              {isUploading ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Wczytuję...
+                </>
+              ) : (
+                <>
+                  <Upload className="h-4 w-4 mr-2" />
+                  {(columnAnalysis && columnAnalysis.missing.length > 0) ? 'Brak wymaganych kolumn' : 'Wczytaj CSV'}
+                </>
+              )}
             </Button>
           </div>
         </DialogContent>
@@ -1863,6 +2804,7 @@ export function ClientsTable() {
         isOpen={isDetailsPopupOpen}
         onClose={handleCloseDetailsPopup}
         client={selectedClientForDetails}
+        onUpdate={handleClientUpdateFromPopup}
       />
     </div>
   )
