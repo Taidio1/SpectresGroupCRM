@@ -18,6 +18,9 @@ import {
   Users,
   Phone,
   Clock,
+  Trophy,
+  Crown,
+  Target,
 } from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -30,7 +33,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, PieChart, Pie, Cell } from "recharts"
 import Link from "next/link"
 import { useAuth } from "@/store/useStore"
-import { clientsApi, getCanvasStatusColor, DailyScheduleSlot } from "@/lib/supabase"
+import { clientsApi, getCanvasStatusColor, DailyScheduleSlot, authApi, User, reportsApi, EmployeeStats } from "@/lib/supabase"
 
 // Ostatnie aktywności
 const recentActivities = [
@@ -58,6 +61,15 @@ export function Dashboard() {
   const [canvasStats, setCanvasStats] = useState({ high: 0, medium: 0, low: 0, total: 0 })
   const [dailySchedule, setDailySchedule] = useState<DailyScheduleSlot[]>([])
   const [scheduleLoading, setScheduleLoading] = useState(true)
+  const [topEmployees, setTopEmployees] = useState<Array<{
+    id: string
+    name: string
+    avatar_url?: string
+    role: string
+    clientsCount: number
+    rank: number
+  }>>([])
+  const [topEmployeesLoading, setTopEmployeesLoading] = useState(true)
 
   // Funkcja do pobierania i filtrowania danych klientów
   const loadClientStats = async () => {
@@ -148,11 +160,51 @@ export function Dashboard() {
     setCanvasStats(stats)
   }
 
+  // Funkcja do ładowania Top 4 pracowników
+  const loadTopEmployees = async () => {
+    if (!user || user.role === 'pracownik') return
+    
+    setTopEmployeesLoading(true)
+    try {
+      console.log('🏆 Ładowanie najlepszych pracowników - dane z tabeli employee_stats...')
+      
+      // Pobierz statystyki pracowników z tabeli employee_stats
+      const employeeStats = await reportsApi.getEmployeeStats(user)
+      
+      // Mapuj dane z employee_stats na format dla tabeli
+      const topEmployeesData = employeeStats
+        .filter((stat: EmployeeStats) => stat.user && stat.user.full_name && stat.user.role === 'pracownik') // Tylko pracownicy z danymi
+        .map((stat: EmployeeStats) => ({
+          id: stat.user!.id,
+          name: stat.user!.full_name,
+          avatar_url: stat.user!.avatar_url,
+          role: stat.user!.role,
+          clientsCount: stat.monthly_sale || 0, // Używaj monthly_sale z tabeli employee_stats
+          rank: 0 // Zostanie ustawione po sortowaniu
+        }))
+        .sort((a: any, b: any) => b.clientsCount - a.clientsCount) // Sortuj po monthly_sale (malejąco)
+        .map((employee: any, index: number) => ({
+          ...employee,
+          rank: index + 1
+        }))
+        .slice(0, 4) // Top 4
+      
+      console.log('✅ Top pracownicy załadowani (monthly_sale z employee_stats):', topEmployeesData)
+      setTopEmployees(topEmployeesData)
+      
+    } catch (error) {
+      console.error('❌ Błąd ładowania top pracowników:', error)
+    } finally {
+      setTopEmployeesLoading(false)
+    }
+  }
+
   // Ładuj dane przy pierwszym renderze i zmianie użytkownika
   useEffect(() => {
     if (user) {
       loadClientStats()
       loadDailySchedule()
+      loadTopEmployees()
     }
   }, [user])
 
@@ -272,41 +324,133 @@ export function Dashboard() {
           ) : (
             // Analiza Wydajności Zespołu (dla manager/szef/admin)
             <div className="col-span-8 grid grid-cols-2 gap-6">
-              {/* Statystyki zespołowe */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
+              {/* Wilki z Wall Street - TOP 4 pracowników */}
+              <Card className="bg-gradient-to-br from-slate-800 to-slate-900 border-slate-700 shadow-xl">
+                <CardHeader className="pb-4">
                   <CardTitle className="text-white flex items-center gap-2">
-                    <Users className="h-5 w-5" />
-                    Wydajność Zespołu
+                    <Trophy className="h-5 w-5 text-amber-400" />
+                    Wilki z Wall Street
+                    {topEmployeesLoading && (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-amber-400"></div>
+                    )}
                   </CardTitle>
-                  <p className="text-sm text-slate-400">Porównanie wyników pracowników</p>
+                  <p className="text-sm text-slate-400">Top 4 pracowników z największą liczbą zdobytych klientów (sale)</p>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-4">
-                    {[
-                      { name: "Jan Kowalski", calls: 45, conversions: 28, rate: "62%" },
-                      { name: "Anna Nowak", calls: 38, conversions: 31, rate: "82%" },
-                      { name: "Piotr Zieliński", calls: 52, conversions: 35, rate: "67%" },
-                      { name: "Maria Wiśniewska", calls: 41, conversions: 24, rate: "59%" },
-                    ].map((employee, index) => (
-                      <div key={index} className="flex items-center justify-between p-3 bg-slate-700/50 rounded-lg">
-                        <div className="flex items-center gap-3">
-                          <Avatar className="h-8 w-8">
-                            <AvatarFallback className="bg-slate-600 text-slate-300 text-xs">
-                              {employee.name.split(' ').map(n => n[0]).join('')}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div>
-                            <div className="text-sm font-medium text-white">{employee.name}</div>
-                            <div className="text-xs text-slate-400">{employee.calls} rozmów</div>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-sm font-semibold text-green-400">{employee.conversions} konwersji</div>
-                          <div className="text-xs text-slate-400">{employee.rate} skuteczności</div>
-                        </div>
+                  {topEmployeesLoading ? (
+                    <div className="flex items-center justify-center h-48">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400"></div>
+                    </div>
+                  ) : topEmployees.length === 0 ? (
+                    <div className="flex items-center justify-center h-48 text-slate-400">
+                      <div className="text-center">
+                        <Users className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                        <p>Brak danych pracowników</p>
                       </div>
-                    ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {topEmployees.map((employee, index) => {
+                        const isFirst = employee.rank === 1
+                        const isSecond = employee.rank === 2
+                        const isThird = employee.rank === 3
+                        
+                        return (
+                          <div 
+                            key={employee.id} 
+                            className={`flex items-center justify-between p-4 rounded-lg border transition-all duration-200 hover:scale-[1.02] ${
+                              isFirst 
+                                ? 'bg-gradient-to-r from-amber-500/20 to-yellow-500/20 border-amber-500/40 shadow-lg shadow-amber-500/10' 
+                                : isSecond 
+                                ? 'bg-gradient-to-r from-slate-600/20 to-slate-500/20 border-slate-400/40 shadow-md' 
+                                : isThird 
+                                ? 'bg-gradient-to-r from-orange-600/20 to-amber-600/20 border-orange-500/40 shadow-md' 
+                                : 'bg-slate-700/50 border-slate-600/50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              {/* Pozycja i ikona */}
+                              <div className={`flex items-center justify-center w-8 h-8 rounded-full font-bold ${
+                                isFirst 
+                                  ? 'bg-amber-500 text-white' 
+                                  : isSecond 
+                                  ? 'bg-slate-500 text-white' 
+                                  : isThird 
+                                  ? 'bg-orange-500 text-white' 
+                                  : 'bg-slate-600 text-slate-300'
+                              }`}>
+                                {isFirst ? (
+                                  <Crown className="h-4 w-4" />
+                                ) : (
+                                  employee.rank
+                                )}
+                              </div>
+                              
+                              {/* Avatar i dane */}
+                              <Avatar className="h-10 w-10 ring-2 ring-slate-600">
+                                <AvatarImage 
+                                  src={employee.avatar_url || '/placeholder-user.jpg'} 
+                                  alt={employee.name}
+                                />
+                                <AvatarFallback className={`text-white text-sm font-semibold ${
+                                  isFirst 
+                                    ? 'bg-gradient-to-r from-amber-500 to-yellow-500' 
+                                    : 'bg-gradient-to-r from-cyan-500 to-blue-500'
+                                }`}>
+                                  {employee.name.split(' ').map(n => n[0]).join('').toUpperCase()}
+                                </AvatarFallback>
+                              </Avatar>
+                              
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-sm font-semibold ${
+                                    isFirst ? 'text-amber-300' : 'text-white'
+                                  }`}>
+                                    {employee.name}
+                                  </span>
+                                  {isFirst && <Star className="h-4 w-4 text-amber-400 fill-amber-400" />}
+                                </div>
+                                <div className="text-xs text-slate-400">
+                                  Pozycja #{employee.rank}
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="text-right">
+                              <div className={`text-lg font-bold flex items-center gap-1 ${
+                                isFirst 
+                                  ? 'text-amber-400' 
+                                  : isSecond 
+                                  ? 'text-slate-300' 
+                                  : isThird 
+                                  ? 'text-orange-400' 
+                                  : 'text-slate-300'
+                              }`}>
+                                <Target className="h-4 w-4" />
+                                {employee.clientsCount}
+                              </div>
+                              <div className="text-xs text-slate-400">
+                                {employee.clientsCount === 1 ? 'zdobyty klient' : 'zdobytych klientów'}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                  
+                  {/* Przycisk odświeżania */}
+                  <div className="mt-4 pt-4 border-t border-slate-700">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={loadTopEmployees}
+                      disabled={topEmployeesLoading}
+                      className="w-full text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                    >
+                      <Trophy className="h-4 w-4 mr-2" />
+                      {topEmployeesLoading ? 'Ładowanie...' : 'Odśwież ranking'}
+                    </Button>
                   </div>
                 </CardContent>
               </Card>

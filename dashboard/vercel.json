@@ -1,8 +1,16 @@
 {
   "crons": [
     {
-      "path": "/api/cron/client-status-management",
+      "path": "/api/cron/client-status-management", 
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/refresh-materialized-views",
+      "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/cron/archive-old-logs", 
+      "schedule": "0 2 * * 0"
     }
   ]
 } 

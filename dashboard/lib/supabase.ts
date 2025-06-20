@@ -2029,6 +2029,66 @@ export const reportsApi = {
       console.log('🔄 Graceful fallback - zwracam pustą tablicę')
       return []
     }
+  },
+
+  // 🚀 NOWE FUNKCJE PERFORMANCE - Materializowane Widoki
+
+  // Zastępuje ciężkie JOIN'y - teraz natychmiastowe ładowanie
+  async getMonthlyEmployeePerformance(year: number, month: number) {
+    try {
+      console.log(`📊 Pobieranie wydajności pracowników dla ${year}-${month} (zoptymalizowane)...`)
+      
+      const { data, error } = await supabase.rpc('get_monthly_employee_performance', {
+        target_year: year,
+        target_month: month
+      })
+      
+      if (error) {
+        console.error('❌ Błąd pobierania wydajności pracowników:', error)
+        throw error
+      }
+      
+      console.log(`✅ Wydajność pracowników pobrana: ${data?.length || 0} rekordów`)
+      return data
+    } catch (error) {
+      console.error('❌ getMonthlyEmployeePerformance failed:', error)
+      throw error
+    }
+  },
+
+  // Szybkie statystyki zespołu na podstawie materializowanych widoków
+  async getTeamSummary(year: number, month: number) {
+    try {
+      const { data, error } = await supabase
+        .from('mv_monthly_employee_stats')
+        .select('*')
+        .eq('year', year)
+        .eq('month', month)
+        .order('owned_sales', { ascending: false })
+      
+      if (error) throw error
+      
+      return data
+    } catch (error) {
+      console.error('❌ getTeamSummary failed:', error)
+      throw error
+    }
+  },
+
+  // Performance analytics - top performers
+  async getTopPerformers(limit: number = 10) {
+    try {
+      const { data, error } = await supabase.rpc('get_top_performers', {
+        limit_count: limit
+      })
+      
+      if (error) throw error
+      
+      return data
+    } catch (error) {
+      console.error('❌ getTopPerformers failed:', error)
+      throw error
+    }
   }
 }
 
@@ -2299,6 +2359,198 @@ export const getCanvasClientsWithPriority = async (user: User) => {
     return { clients: [], stats: { high: 0, medium: 0, low: 0, total: 0 } }
   }
 } 
+
+// 🚀 NOWE API PERFORMANCE - Materializowane Widoki i Optymalizacje
+// Dodane zgodnie z INSTRUKCJE_PERFORMANCE_OPTIMIZATIONS.md
+
+export const dashboardApi = {
+  // Zastępuje wolne zapytania dashboard - teraz ~10ms zamiast ~200ms
+  async getDashboardMetrics() {
+    try {
+      console.log('⚡ Pobieranie szybkich metryk dashboard z materializowanego widoku...')
+      
+      const { data, error } = await supabase.rpc('get_dashboard_metrics');
+      
+      if (error) {
+        console.error('❌ Błąd pobierania metryk dashboard:', error)
+        throw error
+      }
+      
+      console.log('✅ Dashboard metrics pobrane w trybie express:', data?.length || 0, 'metryk')
+      return data
+    } catch (error) {
+      console.error('❌ getDashboardMetrics failed:', error)
+      throw error
+    }
+  },
+
+  // Sprawdzenie czy materializowane widoki są świeże
+  async checkViewFreshness() {
+    try {
+      const { data, error } = await supabase
+        .from('mv_dashboard_summary')
+        .select('last_updated')
+        .single()
+      
+      if (error) throw error
+      
+      const lastUpdate = new Date(data.last_updated)
+      const now = new Date()
+      const minutesSinceUpdate = Math.floor((now.getTime() - lastUpdate.getTime()) / (1000 * 60))
+      
+      return {
+        lastUpdate: data.last_updated,
+        minutesSinceUpdate,
+        isStale: minutesSinceUpdate > 30 // Uznaj za nieaktualne po 30 minutach
+      }
+    } catch (error) {
+      console.error('❌ Błąd sprawdzania świeżości widoków:', error)
+      return { lastUpdate: null, minutesSinceUpdate: Infinity, isStale: true }
+    }
+  }
+}
+
+// 🚀 NOWE FUNKCJE PERFORMANCE dodane do istniejącego reportsApi
+
+export const teamApi = {
+  // Szybki przegląd aktywności zespołu
+  async getTeamActivityOverview() {
+    try {
+      console.log('👥 Pobieranie przeglądu aktywności zespołu (zoptymalizowane)...')
+      
+      const { data, error } = await supabase
+        .from('mv_activity_summary')
+        .select('*')
+        .in('role', ['pracownik', 'manager', 'szef'])
+        .order('activities_24h', { ascending: false })
+      
+      if (error) {
+        console.error('❌ Błąd pobierania aktywności zespołu:', error)
+        throw error
+      }
+      
+      console.log(`✅ Aktywność zespołu pobrana: ${data?.length || 0} użytkowników`)
+      return data
+    } catch (error) {
+      console.error('❌ getTeamActivityOverview failed:', error)
+      throw error
+    }
+  },
+
+  // Sprawdzenie aktywnych użytkowników w czasie rzeczywistym
+  async getActiveUsersNow() {
+    try {
+      const { data, error } = await supabase
+        .from('mv_activity_summary')
+        .select('user_id, full_name, activity_status, last_activity')
+        .eq('activity_status', 'active')
+        .order('last_activity', { ascending: false })
+      
+      if (error) throw error
+      
+      return data
+    } catch (error) {
+      console.error('❌ getActiveUsersNow failed:', error)
+      throw error
+    }
+  },
+
+  // Statystyki produktywności zespołu
+  async getProductivityStats() {
+    try {
+      const { data, error } = await supabase
+        .from('mv_activity_summary')
+        .select('activities_24h, activities_7d, phone_clicks, status_changes')
+        .in('role', ['pracownik', 'manager', 'szef'])
+      
+      if (error) throw error
+      
+      // Oblicz średnie
+      const totalUsers = data.length
+      const avgDaily = data.reduce((sum, user) => sum + user.activities_24h, 0) / totalUsers
+      const avgWeekly = data.reduce((sum, user) => sum + user.activities_7d, 0) / totalUsers
+      
+      return {
+        totalUsers,
+        avgDailyActivities: Math.round(avgDaily),
+        avgWeeklyActivities: Math.round(avgWeekly),
+        totalDailyActivities: data.reduce((sum, user) => sum + user.activities_24h, 0),
+        totalWeeklyActivities: data.reduce((sum, user) => sum + user.activities_7d, 0)
+      }
+    } catch (error) {
+      console.error('❌ getProductivityStats failed:', error)
+      throw error
+    }
+  }
+}
+
+// 🔧 PERFORMANCE MONITORING API
+export const performanceApi = {
+  // Sprawdzenie metryk wydajności systemu
+  async getSystemMetrics() {
+    try {
+      const { data, error } = await supabase.rpc('get_activity_logs_stats')
+      
+      if (error) throw error
+      
+      return data
+    } catch (error) {
+      console.error('❌ getSystemMetrics failed:', error)
+      throw error
+    }
+  },
+
+  // Manualne odświeżenie materializowanych widoków
+  async refreshMaterializedViews() {
+    try {
+      console.log('🔄 Manualnie odświeżam materializowane widoki...')
+      
+      const { data, error } = await supabase.rpc('refresh_all_materialized_views')
+      
+      if (error) throw error
+      
+      console.log('✅ Widoki odświeżone:', data)
+      return data
+    } catch (error) {
+      console.error('❌ refreshMaterializedViews failed:', error)
+      throw error
+    }
+  },
+
+  // Archiwizacja starych logów
+  async archiveOldLogs() {
+    try {
+      console.log('📦 Uruchamiam archiwizację starych logów...')
+      
+      const { data, error } = await supabase.rpc('archive_old_activity_logs')
+      
+      if (error) throw error
+      
+      console.log(`✅ Zarchiwizowano ${data} starych logów`)
+      return data
+    } catch (error) {
+      console.error('❌ archiveOldLogs failed:', error)
+      throw error
+    }
+  },
+
+  // Optymalizacja bazy danych
+  async optimizeDatabase() {
+    try {
+      console.log('🚀 Uruchamiam optymalizację bazy danych...')
+      
+      const { data, error } = await supabase.rpc('optimize_database_performance')
+      
+      if (error) throw error
+      
+      console.log('✅ Baza danych zoptymalizowana:', data)
+      return data
+    } catch (error) {
+      console.error('❌ optimizeDatabase failed:', error)
+      throw error
+    }
+  }
+}
 
 export interface EmployeeActivityStats {
   id: string

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import {
   BarChart3,
   Bell,
@@ -54,7 +54,10 @@ import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUr
 import { useToast } from "@/hooks/use-toast"
 import { authApi, supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/language-context"
-import { ClientDetailsPopup } from "@/components/client-details-popup"
+import { useDebounced } from "@/hooks/useDebounced"
+import { useProgressiveData, useSkeletonState } from "@/hooks/useProgressiveLoading"
+import { ClientTableSkeleton, BatchLoadingSkeleton, ContentFadeIn } from "@/components/ui/skeleton"
+import { LazyClientDetailsPopupWrapper, usePreloadComponent, preloadComponents } from "@/components/LazyComponents"
 
 
 // Mockowane dane klientów zgodnie z ETAPEM 5
@@ -262,8 +265,9 @@ export function ClientsTable() {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [historyLoaded, setHistoryLoaded] = useState(false) // Dodaj stan śledzenia czy historia została załadowana
   
-  // Filtry
+  // 🚀 PERFORMANCE: Debounced Search - zapobiega nadmiernym zapytaniom przy wpisywaniu
   const [searchQuery, setSearchQuery] = useState('')
+  const debouncedSearchQuery = useDebounced(searchQuery, 300) // 300ms delay
   const [ownerFilter, setOwnerFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [availableOwners, setAvailableOwners] = useState<any[]>([])
@@ -275,11 +279,39 @@ export function ClientsTable() {
   const [sortField, setSortField] = useState<string>('updated_at')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
   
-  // Paginacja
+  // 🚀 PERFORMANCE: Paginacja z Progressive Loading
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(25)
+  const [pageSize, setPageSize] = useState(25) // Default 25 elementów na stronę
   const [totalPages, setTotalPages] = useState(0)
   const [paginatedClients, setPaginatedClients] = useState<any[]>([])
+  
+  // 🚀 PROGRESSIVE LOADING: Hook dla progresywnego ładowania klientów
+  const handleBatchLoad = useCallback((batch: any[], batchIndex: number) => {
+    console.log(`📊 Progressive loading: batch ${batchIndex + 1} loaded (${batch.length} items)`)
+  }, [])
+
+  const handleComplete = useCallback((allData: any[]) => {
+    console.log(`✅ Progressive loading complete: ${allData.length} total items`)
+  }, [])
+
+  const {
+    loadedData: progressiveClients,
+    isLoading: isProgressiveLoading,
+    progress: loadingProgress,
+    currentBatch,
+    totalBatches
+  } = useProgressiveData(paginatedClients, {
+    batchSize: 15, // Ładuj 15 klientów na raz dla smooth UX
+    delay: 30, // 30ms między batches - smooth ale szybkie
+    onBatchLoad: handleBatchLoad,
+    onComplete: handleComplete
+  })
+  
+  // 🚀 SKELETON STATE: Pokazuj skeleton minimum 400ms dla smooth UX
+  const showSkeleton = useSkeletonState(loading, 400)
+  
+  // 🚀 PRELOADING: Hook dla preloadingu komponentów przy hover
+  const { preload: preloadClientDetails } = usePreloadComponent(preloadComponents.clientDetails)
   
   // Stan dla popup detali klienta
   const [selectedClientForDetails, setSelectedClientForDetails] = useState<any>(null)
@@ -558,11 +590,6 @@ export function ClientsTable() {
       const clientsWithoutOwners = clientsWithUI.filter(client => !client.owner && client.owner_id)
       const clientsWithoutAnyOwner = clientsWithUI.filter(client => !client.owner && !client.owner_id)
       
-      console.log(`📊 Statystyki właścicieli:
-        ✅ Z właścicielem: ${clientsWithOwners.length}
-        ❌ Bez właściciela (błędny owner_id): ${clientsWithoutOwners.length}
-        ⚪ Bez przypisania: ${clientsWithoutAnyOwner.length}
-      `)
 
       if (clientsWithoutOwners.length > 0) {
         console.log('⚠️ Klienci z błędnymi owner_id:', clientsWithoutOwners.map(c => ({
@@ -665,15 +692,15 @@ export function ClientsTable() {
     }
   }
 
-  // Funkcja filtrowania klientów
+  // 🚀 PERFORMANCE: Funkcja filtrowania klientów z debounced search
   const filterClients = () => {
     if (!clients.length) return
 
     let filtered = clients
 
-    // Filtr wyszukiwania
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
+    // Filtr wyszukiwania - używa debounced query dla lepszej wydajności
+    if (debouncedSearchQuery.trim()) {
+      const query = debouncedSearchQuery.toLowerCase()
       filtered = filtered.filter(client =>
         client.first_name.toLowerCase().includes(query) ||
         client.last_name.toLowerCase().includes(query) ||
@@ -711,12 +738,12 @@ export function ClientsTable() {
     setPaginatedClients(paginated)
   }
 
-  // Efekt filtrowania
+  // 🚀 PERFORMANCE: Efekt filtrowania z debounced search
   useEffect(() => {
     filterClients()
-  }, [clients, searchQuery, ownerFilter, statusFilter, sortField, sortDirection, currentPage, pageSize])
+  }, [clients, debouncedSearchQuery, ownerFilter, statusFilter, sortField, sortDirection, currentPage, pageSize])
 
-  // Efekt resetowania strony przy zmianie filtrów
+  // Efekt resetowania strony przy zmianie filtrów - używa oryginalnego searchQuery dla natychmiastowej reakcji
   useEffect(() => {
     setCurrentPage(1)
   }, [searchQuery, ownerFilter, statusFilter])
@@ -1807,10 +1834,18 @@ export function ClientsTable() {
         </CardHeader>
         
         <CardContent>
-          {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400"></div>
-              <span className="ml-2 text-slate-400">Ładowanie klientów...</span>
+          {showSkeleton ? (
+            <ClientTableSkeleton rows={Math.min(pageSize, 15)} />
+          ) : isProgressiveLoading && paginatedClients.length > 0 ? (
+            <div className="space-y-4">
+              <BatchLoadingSkeleton 
+                totalBatches={totalBatches}
+                currentBatch={currentBatch}
+                itemsLoaded={progressiveClients.length}
+                totalItems={paginatedClients.length}
+              />
+              
+              
             </div>
           ) : (
             <div className="relative">
@@ -1860,15 +1895,19 @@ export function ClientsTable() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {paginatedClients.length === 0 ? (
+                  {progressiveClients.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={8} className="text-center py-8 text-slate-400">
                         Brak klientów do wyświetlenia
                       </TableCell>
                     </TableRow>
                   ) : (
-                    paginatedClients.map((client) => (
-                                              <TableRow key={client.id} className={`border-slate-700 ${getRowBackgroundColor(client)}`}>
+                    progressiveClients.map((client, index) => (
+                        <TableRow 
+                          key={client.id} 
+                          className={`border-slate-700 ${getRowBackgroundColor(client)} animate-in fade-in-0 slide-in-from-bottom-2`}
+                          style={{ animationDelay: `${index * 20}ms` }}
+                        >
                         <TableCell>
                           <div className="text-sm text-white flex items-center gap-2">
                             {client.first_name} {client.last_name}
@@ -2086,6 +2125,7 @@ export function ClientsTable() {
                               size="sm"
                               variant="outline"
                               onClick={() => handleEdit(client)}
+                              onMouseEnter={preloadClientDetails}
                               className="h-8 w-8 p-0 border-slate-600 hover:bg-slate-700"
                             >
                               <Edit className="h-4 w-4" />
@@ -2100,7 +2140,7 @@ export function ClientsTable() {
                             </Button>
                           </div>
                         </TableCell>
-                      </TableRow>
+                        </TableRow>
                     ))
                   )}
                 </TableBody>
@@ -3058,7 +3098,7 @@ export function ClientsTable() {
         </DialogContent>
       </Dialog>
 
-      <ClientDetailsPopup
+      <LazyClientDetailsPopupWrapper
         isOpen={isDetailsPopupOpen}
         onClose={handleCloseDetailsPopup}
         client={selectedClientForDetails}
