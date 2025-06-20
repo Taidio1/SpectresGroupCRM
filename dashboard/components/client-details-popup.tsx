@@ -90,7 +90,17 @@ export function ClientDetailsPopup({ client, isOpen, onClose, onUpdate }: Client
   const lastUpdate = formatDate(client.updated_at)
   const created = formatDate(client.created_at)
 
-  const handlePhoneClick = (phone: string) => {
+  const handlePhoneClick = async (phone: string) => {
+    try {
+      // Aktualizuj czas ostatniego kliknięcia telefonu jeśli user jest dostępny
+      if (user && client) {
+        await clientsApi.updateLastPhoneClick(client.id, user)
+        console.log(`📞 Zarejestrowano kliknięcie telefonu w popup dla klienta: ${client.first_name} ${client.last_name}`)
+      }
+    } catch (error) {
+      console.error('❌ Błąd rejestrowania kliknięcia telefonu w popup:', error)
+    }
+    
     window.open(`tel:${phone}`, '_self')
   }
 

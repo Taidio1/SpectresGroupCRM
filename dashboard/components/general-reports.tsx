@@ -14,6 +14,7 @@ import {
   Filter,
   Download,
   PieChart,
+  Database,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -21,6 +22,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, PieChart as RechartsPieChart, Pie, Cell, LineChart, Line } from "recharts"
+import { reportsApi } from "@/lib/supabase"
 
 // Dane ogólnych statystyk
 const overallStats = {
@@ -74,7 +76,33 @@ const monthlyTrendData = [
 
 export function GeneralReports() {
   const [selectedPeriod, setSelectedPeriod] = useState('week')
+  const [databaseUtilization, setDatabaseUtilization] = useState({
+    withOwner: 0,
+    withoutOwner: 0,
+    total: 0,
+    utilizationPercentage: 0
+  })
+  const [loading, setLoading] = useState(true)
   const today = new Date().toLocaleDateString('pl-PL')
+
+  // Pobierz statystyki wykorzystania bazy przy ładowaniu komponentu
+  useEffect(() => {
+    const loadDatabaseUtilization = async () => {
+      try {
+        setLoading(true)
+        console.log('📊 Ładowanie statystyk wykorzystania bazy...')
+        const stats = await reportsApi.getDatabaseUtilization()
+        setDatabaseUtilization(stats)
+        console.log('✅ Załadowano statystyki wykorzystania bazy:', stats)
+      } catch (error) {
+        console.error('❌ Błąd ładowania statystyk wykorzystania bazy:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadDatabaseUtilization()
+  }, [])
 
   const handleExportPDF = () => {
     alert('Eksport do PDF - funkcjonalność w przygotowaniu')
@@ -117,6 +145,33 @@ export function GeneralReports() {
 
       {/* Kluczowe metryki */}
       <div className="grid grid-cols-4 gap-4 mb-6">
+      <Card className="bg-slate-800 border-slate-700">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-slate-400">Wykorzystanie bazy</p>
+                {loading ? (
+                  <p className="text-3xl font-bold text-white">...</p>
+                ) : (
+                  <p className="text-3xl font-bold text-white">{databaseUtilization.utilizationPercentage}%</p>
+                )}
+                <div className="flex items-center gap-1 mt-1">
+                  {loading ? (
+                    <span className="text-sm text-slate-400">Ładowanie...</span>
+                  ) : (
+                    <>
+                      <span className="text-sm text-green-400">{databaseUtilization.withOwner} z właścicielem</span>
+                      <span className="text-sm text-slate-400">/ {databaseUtilization.withoutOwner} bez</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div className="text-purple-400">
+                <Database className="h-8 w-8" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
         <Card className="bg-slate-800 border-slate-700">
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
@@ -165,24 +220,6 @@ export function GeneralReports() {
               </div>
               <div className="text-blue-400">
                 <Users className="h-8 w-8" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-slate-800 border-slate-700">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-slate-400">Ogólna efektywność</p>
-                <p className="text-3xl font-bold text-white">{overallStats.efficiency}%</p>
-                <div className="flex items-center gap-1 mt-1">
-                  <TrendingUp className="h-4 w-4 text-green-400" />
-                  <span className="text-sm text-green-400">Bardzo dobra</span>
-                </div>
-              </div>
-              <div className="text-purple-400">
-                <Award className="h-8 w-8" />
               </div>
             </div>
           </CardContent>

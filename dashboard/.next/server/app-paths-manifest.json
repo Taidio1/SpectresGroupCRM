@@ -1,3 +1,5 @@
 {
+  "/clients/page": "app/clients/page.js",
+  "/reports/general/page": "app/reports/general/page.js",
   "/reports/details/page": "app/reports/details/page.js"
 }

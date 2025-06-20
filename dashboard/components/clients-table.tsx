@@ -50,7 +50,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Progress } from "@/components/ui/progress"
 import { useAuth } from "@/store/useStore"
-import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUrl, csvImportApi } from "@/lib/supabase"
+import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUrl, csvImportApi, reportsApi } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { authApi, supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/language-context"
@@ -234,6 +234,8 @@ const emptyClient = {
   }
 }
 
+
+
 export function ClientsTable() {
   const { user } = useAuth()
   const { toast } = useToast()
@@ -258,6 +260,7 @@ export function ClientsTable() {
   const [currentUser] = useState('current_user')
   const [clientHistory, setClientHistory] = useState<ClientHistory[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [historyLoaded, setHistoryLoaded] = useState(false) // Dodaj stan śledzenia czy historia została załadowana
   
   // Filtry
   const [searchQuery, setSearchQuery] = useState('')
@@ -321,11 +324,17 @@ export function ClientsTable() {
       ownerSubscriptionRef.current = null
     }
 
+    // Sprawdź czy user jest dostępny
+    if (!user) {
+      console.warn('⚠️ Brak użytkownika - pomijam konfigurację subskrypcji')
+      return
+    }
+
     console.log('🔄 Ustawiam subskrypcję na zmiany właścicieli klientów')
     
     try {
       const callback = (payload: any) => {
-        console.log('📡 Real-time update otrzymany')
+        console.log('📡 Real-time update otrzymany:', payload)
         
         if (payload.eventType === 'UPDATE' && payload.new) {
           const { id, owner_id, first_name, last_name } = payload.new
@@ -380,6 +389,19 @@ export function ClientsTable() {
       }
       
       console.log('📡 Tworzę subskrypcję real-time...')
+      
+      // Sprawdź czy clientsApi ma funkcję subscribeToOwnerChanges
+      if (!clientsApi.subscribeToOwnerChanges || typeof clientsApi.subscribeToOwnerChanges !== 'function') {
+        console.warn('⚠️ Funkcja subscribeToOwnerChanges nie jest dostępna - pomijam subskrypcję')
+        
+        toast({
+          title: "Informacja",
+          description: "Real-time aktualizacje nie są dostępne. Dane będą odświeżane periodycznie.",
+          duration: 3000
+        })
+        return
+      }
+      
       const subscription = clientsApi.subscribeToOwnerChanges(callback)
       ownerSubscriptionRef.current = subscription
       
@@ -387,24 +409,49 @@ export function ClientsTable() {
       
       // Sprawdź po chwili czy subskrypcja jest aktywna
       setTimeout(() => {
-        if (subscription && 'state' in subscription && (subscription as any).state === 'closed') {
-          console.warn('⚠️ Subskrypcja real-time zamknięta - używamy tylko okresowego odświeżania')
-          toast({
-            title: "Informacja",
-            description: "Real-time aktualizacje są niedostępne. Dane będą odświeżane co 10 sekund.",
-            duration: 5000
-          })
+        try {
+          if (subscription && 'state' in subscription) {
+            const state = (subscription as any).state
+            if (state === 'closed' || state === 'closing') {
+              console.warn('⚠️ Subskrypcja real-time zamknięta - używamy tylko okresowego odświeżania')
+              toast({
+                title: "Informacja",
+                description: "Real-time aktualizacje są niedostępne (RLS). Dane będą odświeżane co 10 sekund.",
+                duration: 5000
+              })
+            } else if (state === 'connected' || state === 'joined') {
+              console.log('✅ Subskrypcja real-time aktywna')
+            }
+          }
+        } catch (stateError) {
+          console.warn('⚠️ Nie można sprawdzić stanu subskrypcji:', stateError)
         }
       }, 3000)
       
     } catch (error) {
       console.error('❌ Błąd konfiguracji subskrypcji owner changes:', error)
-      toast({
-        title: "Ostrzeżenie",
-        description: "Real-time aktualizacje są niedostępne. Użyj przycisku 'Odśwież' aby zobaczyć najnowsze zmiany.",
-        variant: "destructive",
-        duration: 6000
-      })
+      
+                    // Sprawdź czy to błąd uprawnień
+       const isPermissionError = error && typeof error === 'object' && 
+         (('code' in error && ((error as any).code === 'PGRST116' || (error as any).code === '42501')) ||
+         ('message' in error && typeof (error as any).message === 'string' && 
+          ((error as any).message.includes('permission') || (error as any).message.includes('RLS'))))
+      
+      if (isPermissionError) {
+        console.warn('⚠️ Subskrypcja real-time zablokowana przez RLS')
+        toast({
+          title: "Informacja",
+          description: "Real-time aktualizacje zablokowane przez uprawnienia. Używaj przycisku 'Odśwież'.",
+          duration: 5000
+        })
+      } else {
+        toast({
+          title: "Ostrzeżenie",
+          description: "Real-time aktualizacje są niedostępne. Użyj przycisku 'Odśwież' aby zobaczyć najnowsze zmiany.",
+          variant: "destructive",
+          duration: 6000
+        })
+      }
     }
   }
 
@@ -482,23 +529,23 @@ export function ClientsTable() {
     }
   }
 
-  // Funkcja do ładowania klientów z bazy danych
+    // Funkcja do ładowania klientów z bazy danych
   const loadClientsFromDatabase = async () => {
     if (!user) return
     
     setLoading(true)
     try {
-      // Najpierw wykonaj test połączenia
-      const testResult = await clientsApi.testBasicQuery()
+      console.log('🔄 Ładowanie klientów z bazy danych...')
       
       const dbClients = await clientsApi.getClients(user)
+      console.log(`✅ Załadowano ${dbClients.length} klientów z bazy danych`)
       
       // Dodaj właściwości UI do danych z bazy
       const clientsWithUI = dbClients.map(client => ({
         ...client,
         isBeingEdited: false,
         editedByUser: null,
-        reminder: {
+        reminder: client.reminder || {
           enabled: false,
           date: '',
           time: '',
@@ -535,18 +582,18 @@ export function ClientsTable() {
     } catch (error) {
       console.error('❌ Błąd ładowania klientów:', error)
       
-      // Pokaż toast z błędem
       toast({
         title: "Błąd",
-        description: "Nie udało się załadować klientów z bazy danych",
-        variant: "destructive"
+        description: "Nie udało się załadować klientów z bazy danych. Sprawdź czy zostały uruchomione poprawki RLS.",
+        variant: "destructive",
+        duration: 5000
       })
     } finally {
       setLoading(false)
     }
   }
 
-  // Funkcja do ładowania wszystkich użytkowników (do wyświetlania właścicieli)
+    // Funkcja do ładowania wszystkich użytkowników (do wyświetlania właścicieli)
   const loadAllUsers = async () => {
     if (!user) return
 
@@ -554,27 +601,34 @@ export function ClientsTable() {
       console.log('👥 Ładuję wszystkich użytkowników...')
       const users = await authApi.getAllUsersForDisplay()
       setAllUsers(users)
-      console.log('✅ Załadowano użytkowników (bezpieczne):', users.length)
+      console.log('✅ Załadowano użytkowników:', users.length)
       
       if (users.length === 0) {
-        console.log('⚠️ UWAGA: Brak użytkowników - prawdopodobnie problem z RLS')
+        console.log('⚠️ UWAGA: Brak użytkowników - sprawdź czy RLS został poprawiony')
         toast({
           title: "Informacja",
-          description: "Ograniczony dostęp do listy użytkowników. Widzisz tylko właścicieli klientów JOIN-owanych z bazy.",
+          description: "Brak dostępu do listy użytkowników. Uruchom poprawkę RLS z pliku fix_users_rls_visibility.sql",
           duration: 5000
         })
       } else if (users.length === 1 && users[0].id === user.id) {
-        console.log('⚠️ RLS: Widzisz tylko siebie - inne informacje o właścicielach z JOIN')
+        console.log('⚠️ RLS: Widzisz tylko siebie - uruchom poprawkę SQL')
         toast({
-          title: "Ograniczenia dostępu",
-          description: "Ze względu na uprawnienia widzisz tylko siebie. Informacje o innych właścicielach pobierane są z bazy klientów.",
+          title: "Ograniczenia RLS",
+          description: "Widzisz tylko siebie. Uruchom fix_users_rls_visibility.sql aby pracownicy widzieli się nawzajem.",
           duration: 5000
         })
+      } else {
+        console.log('✅ Poprawka RLS działa - pracownicy widzą się nawzajem')
       }
     } catch (error) {
       console.error('❌ Błąd ładowania wszystkich użytkowników:', error)
-      // Nie blokuj działania aplikacji - ustaw pustą tablicę
       setAllUsers([])
+      
+      toast({
+        title: "Błąd",
+        description: "Nie udało się załadować użytkowników. Sprawdź RLS policies.",
+        variant: "destructive"
+      })
     }
   }
 
@@ -780,47 +834,52 @@ export function ClientsTable() {
   // Funkcja do pobierania historii zmian
   const fetchClientHistory = async (clientId: string) => {
     setLoadingHistory(true)
+    setClientHistory([])
+    
     try {
-      // Dodaj małe opóźnienie aby triggery bazy danych zdążyły się wykonać
-      await new Promise(resolve => setTimeout(resolve, 500))
+      console.log('📋 Pobieranie historii klienta:', clientId)
       
-      // Najpierw uruchom test dostępu
+      // Test dostępu do activity_logs
       const testResult = await activityLogsApi.testActivityLogsAccess()
+      console.log('Test dostępu activity_logs:', testResult)
       
       if (!testResult.success) {
-        console.error('❌ Test dostępu do activity_logs nieudany:', testResult.error)
+        console.warn('⚠️ Brak dostępu do activity_logs:', testResult.error)
         setClientHistory([])
+        setHistoryLoaded(true) // Oznacz jako załadowane mimo błędu
+        toast({
+          title: "Informacja",
+          description: "Historia zmian jest niedostępna ze względu na uprawnienia",
+          duration: 3000
+        })
         return
       }
       
-      // Pobierz historię
       const history = await activityLogsApi.getClientHistory(clientId)
       setClientHistory(history)
+      setHistoryLoaded(true) // Oznacz historię jako załadowaną
       
-      // Również odśwież aktualnego właściciela klienta w dialogu edycji
-      if (editingClient && editingClient.id === clientId) {
-        try {
-          const currentOwner = await getCurrentOwner(clientId)
-          if (currentOwner) {
-            setEditingClient((prev: any) => ({
-              ...prev,
-              owner: currentOwner,
-              owner_id: currentOwner.id
-            }))
-          }
-        } catch (error) {
-          console.error('Błąd odświeżania właściciela w dialogu:', error)
-        }
+      console.log('✅ Historia załadowana:', history.length, 'wpisów')
+      
+      if (history.length === 0) {
+        toast({
+          title: "Informacja",
+          description: "Brak historii zmian dla tego klienta",
+          duration: 2000
+        })
       }
       
-      // Automatycznie przewiń do dołu historii po odświeżeniu
-      setTimeout(() => {
-        scrollToBottom()
-      }, 100)
-      
     } catch (error) {
-      console.error('Błąd pobierania historii:', error)
+      console.error('❌ Błąd ładowania historii:', error)
       setClientHistory([])
+      setHistoryLoaded(true) // Oznacz jako załadowane mimo błędu
+      
+      toast({
+        title: "Błąd",
+        description: "Nie udało się załadować historii zmian",
+        variant: "destructive",
+        duration: 3000
+      })
     } finally {
       setLoadingHistory(false)
     }
@@ -933,6 +992,29 @@ export function ClientsTable() {
   const handleSave = async () => {
     if (!editingClient || !user) return
     
+    // Przygotuj reminder zgodnie z constraint bazy danych
+    let reminderData: { enabled: boolean; date: string; time: string; note: string } | undefined = undefined
+    if (editingClient.reminder?.enabled) {
+      // Walidacja - data jest wymagana
+      if (!editingClient.reminder?.date) {
+        toast({
+          title: "Błąd walidacji",
+          description: "Jeśli chcesz ustawić przypomnienie, musisz wybrać datę",
+          variant: "destructive"
+        })
+        return
+      }
+      
+      // Przygotuj pełny obiekt reminder z wszystkimi wymaganymi polami
+      reminderData = {
+        enabled: true,
+        date: editingClient.reminder.date,
+        time: editingClient.reminder.time || '09:00',
+        note: editingClient.reminder.note || ''
+      }
+    }
+    // Jeśli reminder nie jest enabled, pozostaje undefined
+    
     setLoading(true)
     try {
       // Przygotuj tylko pola z bazy danych (bez UI properties)
@@ -946,21 +1028,29 @@ export function ClientsTable() {
         notes: editingClient.notes,
         website: editingClient.website,
         status: editingClient.status,
-        reminder: editingClient.reminder, // Dodaj przypomnienie
+        reminder: reminderData, // Użyj przygotowanych danych reminder
       }
       
+      console.log('💾 Zapisywanie zmian klienta...')
       const updatedClient = await clientsApi.updateClient(editingClient.id, clientData, user)
       
-      // Odśwież listę klientów
+      // Pokaż sukces natychmiast
+      toast({
+        title: "✅ Sukces",
+        description: `Klient został zaktualizowany i przypisany do Ciebie jako właściciel`,
+        duration: 4000
+      })
+      
+      // Zamknij popup natychmiast po zapisaniu
+      setIsEditDialogOpen(false)
+      setEditingClient(null)
+      setClientHistory([])
+      setHistoryLoaded(false)
+      
+      // Odśwież listę klientów w tle
       await loadClientsFromDatabase()
       
-      // Odśwież historię klienta po zapisaniu
-      await fetchClientHistory(editingClient.id)
-      
-      toast({
-        title: "Sukces",
-        description: "Klient został zaktualizowany"
-      })
+      console.log('✅ Zmiany zapisane pomyślnie')
       
     } catch (error) {
       console.error('❌ Błąd zapisywania klienta:', error)
@@ -974,9 +1064,10 @@ export function ClientsTable() {
       }
       
       toast({
-        title: "Błąd",
+        title: "❌ Błąd",
         description: errorMessage,
-        variant: "destructive"
+        variant: "destructive",
+        duration: 6000
       })
     } finally {
       setLoading(false)
@@ -987,6 +1078,7 @@ export function ClientsTable() {
     setIsEditDialogOpen(false)
     setEditingClient(null)
     setClientHistory([])
+    setHistoryLoaded(false) // Resetuj stan historii
   }
 
   const handleAddClient = () => {
@@ -996,6 +1088,29 @@ export function ClientsTable() {
 
   const handleSaveNewClient = async () => {
     if (!user) return
+    
+    // Przygotuj reminder zgodnie z constraint bazy danych
+    let reminderData: { enabled: boolean; date: string; time: string; note: string } | undefined = undefined
+    if (newClient.reminder?.enabled) {
+      // Walidacja - data jest wymagana
+      if (!newClient.reminder?.date) {
+        toast({
+          title: "Błąd walidacji",
+          description: "Jeśli chcesz ustawić przypomnienie, musisz wybrać datę",
+          variant: "destructive"
+        })
+        return
+      }
+      
+      // Przygotuj pełny obiekt reminder z wszystkimi wymaganymi polami
+      reminderData = {
+        enabled: true,
+        date: newClient.reminder.date,
+        time: newClient.reminder.time || '09:00',
+        note: newClient.reminder.note || ''
+      }
+    }
+    // Jeśli reminder nie jest enabled, pozostaje undefined
     
     setSavingNewClient(true)
     try {
@@ -1010,6 +1125,7 @@ export function ClientsTable() {
         notes: newClient.notes,
         website: newClient.website,
         status: newClient.status,
+        reminder: reminderData, // Użyj przygotowanych danych reminder
         edited_by: user.id,
         edited_at: new Date().toISOString(),
         owner_id: user.id
@@ -1292,9 +1408,33 @@ export function ClientsTable() {
   }
 
   // Funkcja do obsługi kliknięcia w telefon
-  const handlePhoneClick = (client: any) => {
-    setSelectedClientForDetails(client)
-    setIsDetailsPopupOpen(true)
+  const handlePhoneClick = async (client: any) => {
+    if (!user) return
+    
+    try {
+      // Zaktualizuj czas ostatniego kliknięcia telefonu
+      await clientsApi.updateLastPhoneClick(client.id, user)
+      
+      console.log(`📞 Zarejestrowano kliknięcie telefonu dla klienta: ${client.first_name} ${client.last_name}`)
+      
+      // Pokaż popup z detalami klienta
+      setSelectedClientForDetails(client)
+      setIsDetailsPopupOpen(true)
+      
+    } catch (error) {
+      console.error('❌ Błąd rejestrowania kliknięcia telefonu:', error)
+      
+      // Nawet jeśli rejestracja się nie powiodła, pokaż popup
+      setSelectedClientForDetails(client)
+      setIsDetailsPopupOpen(true)
+      
+      toast({
+        title: "Ostrzeżenie",
+        description: "Nie udało się zarejestrować kliknięcia telefonu",
+        variant: "destructive",
+        duration: 3000
+      })
+    }
   }
 
   // Funkcja do zamknięcia popup
@@ -1392,15 +1532,12 @@ export function ClientsTable() {
     }
     
     try {
-      console.log(`🎯 Przypisuję klienta ${client.id} do edycji przez użytkownika ${user.id}`)
+      console.log(`📝 Otwieranie edycji klienta ${client.id} przez użytkownika ${user.id}`)
       
-      // Automatycznie przypisz klienta do aktualnego użytkownika
-      const updatedClient = await clientsApi.claimClientForEditing(client.id, user.id)
-      
-      // Ustaw zaktualizowanego klienta w edytorze z domyślnym obiektem reminder
+      // Ustaw klienta w edytorze z domyślnym obiektem reminder (bez przypisywania owner_id)
       setEditingClient({
-        ...updatedClient,
-        reminder: (updatedClient as any).reminder || {
+        ...client,
+        reminder: client.reminder || {
           enabled: false,
           date: '',
           time: '',
@@ -1409,26 +1546,117 @@ export function ClientsTable() {
       })
       setIsEditDialogOpen(true)
       
-      // WAŻNE: Odśwież listę klientów od razu aby wszyscy widzieli zmianę właściciela
-      setTimeout(() => {
-        loadClientsFromDatabase()
-      }, 500)
-      
-      // Pobierz historię zmian po otwarciu dialogu
-      fetchClientHistory(client.id)
-      
-      toast({
-        title: "Edycja rozpoczęta",
-        description: `Klient "${client.first_name} ${client.last_name}" został przypisany do Ciebie do edycji`,
-      })
+      // Resetuj stan historii - historia ładuje się na żądanie
+      setClientHistory([])
+      setHistoryLoaded(false)
       
     } catch (error) {
-      console.error('❌ Błąd przypisywania klienta do edycji:', error)
+      console.error('❌ Błąd otwierania edycji klienta:', error)
       toast({
         title: "Błąd",
-        description: "Nie udało się przypisać klienta do edycji",
+        description: "Nie udało się otworzyć edycji klienta",
         variant: "destructive"
       })
+    }
+  }
+
+  // Funkcja do obliczania koloru tła wiersza na podstawie statusu i dat
+  const getRowBackgroundColor = (client: any) => {
+    const now = new Date()
+    
+    // Sprawdź czy klient ma status "canvas" ze zmienionym statusem na "antysale"
+    if (client.status === 'antysale' && client.status_changed_at) {
+      const statusChangedAt = new Date(client.status_changed_at)
+      const daysSinceStatusChange = (now.getTime() - statusChangedAt.getTime()) / (1000 * 60 * 60 * 24)
+      
+      // Jeśli status był zmieniony automatycznie z canvas na antysale (po 2 dniach)
+      if (daysSinceStatusChange >= 2) {
+        return "bg-yellow-100 dark:bg-yellow-900/20" // Lekko żółty
+      }
+    }
+    
+    // Sprawdź ostrzeżenia o braku kontaktu (tylko dla klientów canvas)
+    if (client.status === 'canvas' && client.status_changed_at) {
+      const statusChangedAt = new Date(client.status_changed_at)
+      const daysSinceStatusChange = (now.getTime() - statusChangedAt.getTime()) / (1000 * 60 * 60 * 24)
+      const lastPhoneClick = client.last_phone_click ? new Date(client.last_phone_click) : null
+      
+      // Sprawdź czy był kontakt przez telefon od zmiany statusu
+      const hasContactSinceStatusChange = lastPhoneClick && lastPhoneClick > statusChangedAt
+      
+      if (!hasContactSinceStatusChange) {
+        // Brak kontaktu od zmiany statusu na canvas
+        if (daysSinceStatusChange >= 5) {
+          return "bg-red-200 dark:bg-red-900/30" // Czerwony - dzień 5+
+        } else if (daysSinceStatusChange >= 4) {
+          return "bg-orange-200 dark:bg-orange-900/30" // Pomarańczowy - dzień 4
+        } else if (daysSinceStatusChange >= 2) {
+          return "bg-yellow-200 dark:bg-yellow-900/30" // Żółty - dni 2-3
+        }
+      }
+    }
+    
+    return "hover:bg-slate-700/50" // Domyślny kolor hover
+  }
+
+  // Funkcja do sprawdzania czy klient nie ma właściciela
+  const hasNoOwner = (client: any) => {
+    return !client.owner_id || client.owner_id === null
+  }
+
+  // 🔄 ADMIN: Resetuj właścicieli wszystkich klientów
+  const handleResetAllOwners = async () => {
+    if (!user || user.role !== 'admin') {
+      toast({
+        title: "Błąd uprawnień",
+        description: "Tylko administrator może resetować właścicieli klientów.",
+        variant: "destructive"
+      })
+      return
+    }
+
+    // Pokaż dialog potwierdzenia
+    const confirmed = window.confirm(
+      '🚨 UWAGA: Czy na pewno chcesz zresetować właścicieli WSZYSTKICH klientów?\n\n' +
+      'Ta operacja:\n' +
+      '• Usunie przypisanie właściciela ze wszystkich klientów\n' +
+      '• Jest nieodwracalna\n' +
+      '• Może wpłynąć na pracę zespołu\n\n' +
+      'Kliknij OK aby kontynuować lub Anuluj aby przerwać.'
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      setLoading(true)
+      console.log('🔄 Admin resetuje właścicieli wszystkich klientów...')
+      
+      const result = await reportsApi.resetAllClientOwners(user)
+      
+      // Pokaż sukces
+      toast({
+        title: "✅ Sukces!",
+        description: result.message,
+        duration: 8000
+      })
+
+      // Odśwież listę klientów
+      await loadClientsFromDatabase()
+      
+      console.log(`✅ Admin zresetował właścicieli dla ${result.success} klientów`)
+
+    } catch (error: any) {
+      console.error('❌ Błąd resetowania właścicieli:', error)
+      toast({
+        title: "❌ Błąd",
+        description: error.message || "Nie udało się zresetować właścicieli klientów",
+        variant: "destructive",
+        duration: 8000
+      })
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -1521,6 +1749,20 @@ export function ClientsTable() {
               Wgraj plik
             </Button>
           )}
+
+          {/* Przycisk "Resetuj właścicieli" TYLKO dla admin */}
+          {user?.role === 'admin' && (
+            <Button 
+              onClick={handleResetAllOwners}
+              variant="outline" 
+              className="border-red-600 text-red-400 hover:bg-red-500/20"
+              disabled={loading}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Resetuj właścicieli
+            </Button>
+          )}
+
           <Button 
             onClick={handleAddClient}
             className="bg-cyan-500 hover:bg-cyan-600"
@@ -1530,15 +1772,6 @@ export function ClientsTable() {
           </Button>
         </div>
       </div>
-
-      {/* Informacja dla pracowników */}
-      {user?.role === 'pracownik' && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
-          <p className="text-sm text-blue-700">
-            <strong>Informacja:</strong> {t('clients.employeeInfo')}
-          </p>
-        </div>
-      )}
 
       {/* Tabela klientów - pełna szerokość */}
       <Card className="bg-slate-800 border-slate-700">
@@ -1635,9 +1868,23 @@ export function ClientsTable() {
                     </TableRow>
                   ) : (
                     paginatedClients.map((client) => (
-                      <TableRow key={client.id} className="border-slate-700 hover:bg-slate-700/50">
+                                              <TableRow key={client.id} className={`border-slate-700 ${getRowBackgroundColor(client)}`}>
                         <TableCell>
-                          <div className="text-sm text-white">{client.first_name} {client.last_name}</div>
+                          <div className="text-sm text-white flex items-center gap-2">
+                            {client.first_name} {client.last_name}
+                            {hasNoOwner(client) && (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger>
+                                    <AlertCircle className="h-4 w-4 text-orange-400" />
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p>Klient nie ma przypisanego właściciela</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="text-sm text-white">{client.company_name}</div>
@@ -2236,11 +2483,15 @@ export function ClientsTable() {
                           onClick={() => editingClient && fetchClientHistory(editingClient.id)}
                           disabled={loadingHistory}
                           className="h-6 text-xs border-slate-600 hover:bg-slate-700"
+                          title={historyLoaded ? "Odśwież historię" : "Załaduj historię zmian"}
                         >
                           {loadingHistory ? (
                             <div className="animate-spin rounded-full h-3 w-3 border-b border-cyan-400"></div>
                           ) : (
-                            <RefreshCw className="h-3 w-3" />
+                            <>
+                              <RefreshCw className="h-3 w-3 mr-1" />
+                              {historyLoaded ? "Odśwież" : "Załaduj"}
+                            </>
                           )}
                         </Button>
                       </div>
@@ -2252,7 +2503,13 @@ export function ClientsTable() {
                           {loadingHistory ? (
                             <div className="flex items-center justify-center py-8">
                               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-400"></div>
-                              <span className="ml-2 text-slate-400">Ładowanie...</span>
+                              <span className="ml-2 text-slate-400">Ładowanie historii...</span>
+                            </div>
+                          ) : !historyLoaded ? (
+                            <div className="text-center py-8 text-slate-400">
+                              <History className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                              <p className="mb-2">Historia nie została jeszcze załadowana</p>
+                              <p className="text-xs text-slate-500">Kliknij przycisk odświeżania aby ją pobrać</p>
                             </div>
                           ) : clientHistory.length > 0 ? (
                             <div className="space-y-3">
@@ -2322,6 +2579,7 @@ export function ClientsTable() {
                             <div className="text-center py-8 text-slate-400">
                               <History className="h-12 w-12 mx-auto mb-2 opacity-50" />
                               <p>Brak historii zmian</p>
+                              <p className="text-xs text-slate-500 mt-1">Ten klient nie ma zapisanych zmian</p>
                             </div>
                           )}
                         </div>
