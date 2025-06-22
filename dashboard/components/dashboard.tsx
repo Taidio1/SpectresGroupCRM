@@ -70,6 +70,8 @@ export function Dashboard() {
     rank: number
   }>>([])
   const [topEmployeesLoading, setTopEmployeesLoading] = useState(true)
+  const [salesTrends, setSalesTrends] = useState<Array<{ day: string, canvas: number, sale: number, antysale: number }>>([])
+  const [salesTrendsLoading, setSalesTrendsLoading] = useState(true)
 
   // Funkcja do pobierania i filtrowania danych klientów
   const loadClientStats = async () => {
@@ -179,17 +181,17 @@ export function Dashboard() {
           name: stat.user!.full_name,
           avatar_url: stat.user!.avatar_url,
           role: stat.user!.role,
-          clientsCount: stat.monthly_sale || 0, // Używaj monthly_sale z tabeli employee_stats
+          clientsCount: stat.custom_clients_count || 0, // Używaj custom_clients_count z tabeli employee_stats
           rank: 0 // Zostanie ustawione po sortowaniu
         }))
-        .sort((a: any, b: any) => b.clientsCount - a.clientsCount) // Sortuj po monthly_sale (malejąco)
+        .sort((a: any, b: any) => b.clientsCount - a.clientsCount) // Sortuj po custom_clients_count (malejąco)
         .map((employee: any, index: number) => ({
           ...employee,
           rank: index + 1
         }))
         .slice(0, 4) // Top 4
       
-      console.log('✅ Top pracownicy załadowani (monthly_sale z employee_stats):', topEmployeesData)
+      console.log('✅ Top pracownicy załadowani (custom_clients_count z employee_stats):', topEmployeesData)
       setTopEmployees(topEmployeesData)
       
     } catch (error) {
@@ -199,12 +201,32 @@ export function Dashboard() {
     }
   }
 
+  // Funkcja do ładowania trendów sprzedażowych
+  const loadSalesTrends = async () => {
+    if (!user) return
+    
+    setSalesTrendsLoading(true)
+    try {
+      console.log('📈 Ładowanie trendów sprzedażowych...')
+      const trends = await reportsApi.getSalesTrends(user)
+      setSalesTrends(trends)
+      console.log('✅ Trendy sprzedażowe załadowane:', trends)
+    } catch (error) {
+      console.error('❌ Błąd ładowania trendów sprzedażowych:', error)
+      // W przypadku błędu ustaw puste dane
+      setSalesTrends([])
+    } finally {
+      setSalesTrendsLoading(false)
+    }
+  }
+
   // Ładuj dane przy pierwszym renderze i zmianie użytkownika
   useEffect(() => {
     if (user) {
       loadClientStats()
       loadDailySchedule()
       loadTopEmployees()
+      loadSalesTrends()
     }
   }, [user])
 
@@ -457,56 +479,90 @@ export function Dashboard() {
 
               {/* Trendy sprzedażowe */}
               <Card className="bg-slate-800 border-slate-700">
-                <CardHeader>
-                  <CardTitle className="text-white flex items-center gap-2">
-                    <TrendingUp className="h-5 w-5" />
-                    Trendy Sprzedażowe
-                  </CardTitle>
-                  <p className="text-sm text-slate-400">Analiza konwersji w czasie</p>
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div>
+                    <CardTitle className="text-white flex items-center gap-2">
+                      <TrendingUp className="h-5 w-5" />
+                      Trendy Sprzedażowe
+                      {salesTrendsLoading && (
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-cyan-400"></div>
+                      )}
+                    </CardTitle>
+                    <p className="text-sm text-slate-400">Analiza konwersji z ostatnich 7 dni</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={loadSalesTrends}
+                      disabled={salesTrendsLoading}
+                      className="text-cyan-400 hover:text-cyan-300"
+                    >
+                      <TrendingUp className="h-4 w-4" />
+                    </Button>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <span className="text-sm text-slate-400">Live</span>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="h-48">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={[
-                        { day: "Pon", canvas: 15, sale: 8, antysale: 3 },
-                        { day: "Wt", canvas: 12, sale: 12, antysale: 2 },
-                        { day: "Śr", canvas: 18, sale: 10, antysale: 4 },
-                        { day: "Czw", canvas: 14, sale: 16, antysale: 1 },
-                        { day: "Pt", canvas: 20, sale: 14, antysale: 5 },
-                        { day: "Sob", canvas: 8, sale: 6, antysale: 1 },
-                        { day: "Ndz", canvas: 5, sale: 3, antysale: 0 },
-                      ]}>
-                        <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: "#94a3b8", fontSize: 12 }} />
-                        <YAxis hide />
-                        <Line type="monotone" dataKey="canvas" stroke="#06b6d4" strokeWidth={2} dot={{ fill: "#06b6d4", strokeWidth: 0, r: 3 }} />
-                        <Line type="monotone" dataKey="sale" stroke="#10b981" strokeWidth={2} dot={{ fill: "#10b981", strokeWidth: 0, r: 3 }} />
-                        <Line type="monotone" dataKey="antysale" stroke="#f59e0b" strokeWidth={2} dot={{ fill: "#f59e0b", strokeWidth: 0, r: 3 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="mt-4 grid grid-cols-3 gap-4 text-xs">
-                    <div className="text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <div className="w-2 h-2 bg-cyan-400 rounded-full"></div>
-                        <span className="text-slate-400">Canvas</span>
-                      </div>
-                      <div className="text-lg font-bold text-white mt-1">92</div>
+                  {salesTrendsLoading ? (
+                    <div className="flex items-center justify-center h-48">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400"></div>
                     </div>
-                    <div className="text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <div className="w-2 h-2 bg-green-400 rounded-full"></div>
-                        <span className="text-slate-400">Sale</span>
+                  ) : salesTrends.length === 0 ? (
+                    <div className="flex items-center justify-center h-48 text-slate-400">
+                      <div className="text-center">
+                        <TrendingUp className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                        <p>Brak danych trendów</p>
+                        <p className="text-xs mt-1">Dane z ostatnich 7 dni</p>
                       </div>
-                      <div className="text-lg font-bold text-white mt-1">69</div>
                     </div>
-                    <div className="text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <div className="w-2 h-2 bg-orange-400 rounded-full"></div>
-                        <span className="text-slate-400">Antysale</span>
+                  ) : (
+                    <>
+                      <div className="h-48">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={salesTrends}>
+                            <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: "#94a3b8", fontSize: 12 }} />
+                            <YAxis hide />
+                            <Line type="monotone" dataKey="canvas" stroke="#06b6d4" strokeWidth={2} dot={{ fill: "#06b6d4", strokeWidth: 0, r: 3 }} />
+                            <Line type="monotone" dataKey="sale" stroke="#10b981" strokeWidth={2} dot={{ fill: "#10b981", strokeWidth: 0, r: 3 }} />
+                            <Line type="monotone" dataKey="antysale" stroke="#f59e0b" strokeWidth={2} dot={{ fill: "#f59e0b", strokeWidth: 0, r: 3 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
                       </div>
-                      <div className="text-lg font-bold text-white mt-1">16</div>
-                    </div>
-                  </div>
+                      <div className="mt-4 grid grid-cols-3 gap-4 text-xs">
+                        <div className="text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <div className="w-2 h-2 bg-cyan-400 rounded-full"></div>
+                            <span className="text-slate-400">Canvas</span>
+                          </div>
+                          <div className="text-lg font-bold text-white mt-1">
+                            {salesTrends.reduce((sum, day) => sum + day.canvas, 0)}
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                            <span className="text-slate-400">Sale</span>
+                          </div>
+                          <div className="text-lg font-bold text-white mt-1">
+                            {salesTrends.reduce((sum, day) => sum + day.sale, 0)}
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <div className="w-2 h-2 bg-orange-400 rounded-full"></div>
+                            <span className="text-slate-400">Antysale</span>
+                          </div>
+                          <div className="text-lg font-bold text-white mt-1">
+                            {salesTrends.reduce((sum, day) => sum + day.antysale, 0)}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </CardContent>
               </Card>
             </div>

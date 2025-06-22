@@ -1,4 +1,4 @@
-# 🚀 Optymalizacje Wydajności CRM - Instrukcje dla Developers
+# 🚀 Optymalizacje Wydajności Spectres Group - Instrukcje dla Developers
 
 ## 📊 Zaimplementowane Optymalizacje (Czerwiec 2025)
 

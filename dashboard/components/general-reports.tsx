@@ -23,12 +23,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, PieChart as RechartsPieChart, Pie, Cell, LineChart, Line } from "recharts"
 import { reportsApi } from "@/lib/supabase"
+import { useAuth } from "@/store/useStore"
 
 // Dane ogólnych statystyk
 const overallStats = {
   totalEmployees: 5,
-  totalPhoneCalls: 838,
-  totalPhoneCallsToday: 136,
   avgConversionRate: 69.3,
   totalClients: 500,
   activeClients: 280,
@@ -37,16 +36,7 @@ const overallStats = {
   efficiency: 84.2
 }
 
-// Dane do wykresów
-const dailyStatsData = [
-  { day: 'Pon', telefony: 145, konwersja: 68, klienci: 95 },
-  { day: 'Wt', telefony: 189, konwersja: 72, klienci: 112 },
-  { day: 'Śr', telefony: 134, konwersja: 65, klienci: 89 },
-  { day: 'Czw', telefony: 167, konwersja: 71, klienci: 103 },
-  { day: 'Pt', telefony: 203, konwersja: 78, klienci: 128 },
-  { day: 'Sob', telefony: 98, konwersja: 62, klienci: 76 },
-  { day: 'Nd', telefony: 67, konwersja: 58, klienci: 45 },
-]
+// Dane do wykresów (pozostałe statyczne)
 
 const statusDistributionData = [
   { name: 'Canvas', value: 241, color: '#06b6d4' },
@@ -75,6 +65,7 @@ const monthlyTrendData = [
 ]
 
 export function GeneralReports() {
+  const { user } = useAuth()
   const [selectedPeriod, setSelectedPeriod] = useState('week')
   const [databaseUtilization, setDatabaseUtilization] = useState({
     withOwner: 0,
@@ -82,8 +73,52 @@ export function GeneralReports() {
     total: 0,
     utilizationPercentage: 0
   })
+  const [phoneClicksStats, setPhoneClicksStats] = useState({
+    totalPhoneCalls: 0,
+    totalPhoneCallsToday: 0
+  })
+  const [teamPerformanceTrends, setTeamPerformanceTrends] = useState<Array<{ day: string, telefony: number, konwersja: number, klienci: number }>>([])
   const [loading, setLoading] = useState(true)
+  const [phoneClicksLoading, setPhoneClicksLoading] = useState(true)
+  const [trendsLoading, setTrendsLoading] = useState(true)
   const today = new Date().toLocaleDateString('pl-PL')
+
+  // Pobierz statystyki kliknięć telefonu dla pracowników
+  const loadPhoneClicksStats = async () => {
+    if (!user) return
+    
+    setPhoneClicksLoading(true)
+    try {
+      console.log('📞 Ładowanie statystyk kliknięć telefonu...')
+      const stats = await reportsApi.getPhoneClicksStats(user)
+      setPhoneClicksStats(stats)
+      console.log('✅ Załadowano statystyki kliknięć telefonu:', stats)
+    } catch (error) {
+      console.error('❌ Błąd ładowania statystyk kliknięć telefonu:', error)
+      // W przypadku błędu pozostaw zerowe wartości
+    } finally {
+      setPhoneClicksLoading(false)
+    }
+  }
+
+  // Pobierz trendy wydajności zespołu
+  const loadTeamPerformanceTrends = async () => {
+    if (!user) return
+    
+    setTrendsLoading(true)
+    try {
+      console.log('📊 Ładowanie trendów wydajności zespołu...')
+      const trends = await reportsApi.getTeamPerformanceTrends(user)
+      setTeamPerformanceTrends(trends)
+      console.log('✅ Załadowano trendy wydajności zespołu:', trends)
+    } catch (error) {
+      console.error('❌ Błąd ładowania trendów wydajności zespołu:', error)
+      // W przypadku błędu pozostaw puste dane
+      setTeamPerformanceTrends([])
+    } finally {
+      setTrendsLoading(false)
+    }
+  }
 
   // Pobierz statystyki wykorzystania bazy przy ładowaniu komponentu
   useEffect(() => {
@@ -101,8 +136,16 @@ export function GeneralReports() {
       }
     }
 
-    loadDatabaseUtilization()
-  }, [])
+    const loadData = async () => {
+      await loadDatabaseUtilization()
+      if (user) {
+        await loadPhoneClicksStats()
+        await loadTeamPerformanceTrends()
+      }
+    }
+
+    loadData()
+  }, [user])
 
   const handleExportPDF = () => {
     alert('Eksport do PDF - funkcjonalność w przygotowaniu')
@@ -177,10 +220,18 @@ export function GeneralReports() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-slate-400">Łączne telefony</p>
-                <p className="text-3xl font-bold text-white">{overallStats.totalPhoneCalls}</p>
+                {phoneClicksLoading ? (
+                  <p className="text-3xl font-bold text-white">...</p>
+                ) : (
+                  <p className="text-3xl font-bold text-white">{phoneClicksStats.totalPhoneCalls}</p>
+                )}
                 <div className="flex items-center gap-1 mt-1">
                   <TrendingUp className="h-4 w-4 text-green-400" />
-                  <span className="text-sm text-green-400">+{overallStats.totalPhoneCallsToday} dziś</span>
+                  {phoneClicksLoading ? (
+                    <span className="text-sm text-slate-400">Ładowanie...</span>
+                  ) : (
+                    <span className="text-sm text-green-400">+{phoneClicksStats.totalPhoneCallsToday} dziś</span>
+                  )}
                 </div>
               </div>
               <div className="text-cyan-400">
@@ -229,44 +280,80 @@ export function GeneralReports() {
       <div className="grid grid-cols-12 gap-6">
         {/* Trend tygodniowy */}
         <Card className="col-span-8 bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <BarChart3 className="h-5 w-5" />
-              Trend wydajności zespołu
-            </CardTitle>
-            <p className="text-sm text-slate-400">Telefony, konwersja i klienci w czasie</p>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-white flex items-center gap-2">
+                <BarChart3 className="h-5 w-5" />
+                Trend wydajności zespołu
+                {trendsLoading && (
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-cyan-400"></div>
+                )}
+              </CardTitle>
+              <p className="text-sm text-slate-400">Telefony, konwersja i klienci z ostatnich 7 dni</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={loadTeamPerformanceTrends}
+                disabled={trendsLoading}
+                className="text-cyan-400 hover:text-cyan-300"
+              >
+                <BarChart3 className="h-4 w-4" />
+              </Button>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                <span className="text-sm text-slate-400">Live</span>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={dailyStatsData}>
-                  <XAxis 
-                    dataKey="day" 
-                    axisLine={false} 
-                    tickLine={false} 
-                    tick={{ fill: "#94a3b8", fontSize: 12 }} 
-                  />
-                  <YAxis hide />
-                  <Line type="monotone" dataKey="telefony" stroke="#06b6d4" strokeWidth={3} dot={{ fill: "#06b6d4", r: 4 }} />
-                  <Line type="monotone" dataKey="konwersja" stroke="#10b981" strokeWidth={3} dot={{ fill: "#10b981", r: 4 }} />
-                  <Line type="monotone" dataKey="klienci" stroke="#f59e0b" strokeWidth={3} dot={{ fill: "#f59e0b", r: 4 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="flex justify-center gap-8 mt-4 text-sm">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-cyan-400 rounded-full"></div>
-                <span className="text-slate-400">Telefony</span>
+            {trendsLoading ? (
+              <div className="flex items-center justify-center h-80">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-400"></div>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-green-400 rounded-full"></div>
-                <span className="text-slate-400">Konwersja (%)</span>
+            ) : teamPerformanceTrends.length === 0 ? (
+              <div className="flex items-center justify-center h-80 text-slate-400">
+                <div className="text-center">
+                  <BarChart3 className="h-16 w-16 mx-auto mb-4 opacity-50" />
+                  <p className="text-lg font-medium">Brak danych trendów</p>
+                  <p className="text-sm mt-2">Dane z ostatnich 7 dni będą wyświetlane tutaj</p>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-orange-400 rounded-full"></div>
-                <span className="text-slate-400">Klienci</span>
-              </div>
-            </div>
+            ) : (
+              <>
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={teamPerformanceTrends}>
+                      <XAxis 
+                        dataKey="day" 
+                        axisLine={false} 
+                        tickLine={false} 
+                        tick={{ fill: "#94a3b8", fontSize: 12 }} 
+                      />
+                      <YAxis hide />
+                      <Line type="monotone" dataKey="telefony" stroke="#06b6d4" strokeWidth={3} dot={{ fill: "#06b6d4", r: 4 }} />
+                      <Line type="monotone" dataKey="konwersja" stroke="#10b981" strokeWidth={3} dot={{ fill: "#10b981", r: 4 }} />
+                      <Line type="monotone" dataKey="klienci" stroke="#f59e0b" strokeWidth={3} dot={{ fill: "#f59e0b", r: 4 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex justify-center gap-8 mt-4 text-sm">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-cyan-400 rounded-full"></div>
+                    <span className="text-slate-400">Telefony ({teamPerformanceTrends.reduce((sum, day) => sum + day.telefony, 0)})</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-green-400 rounded-full"></div>
+                    <span className="text-slate-400">Konwersja % (śr. {Math.round(teamPerformanceTrends.reduce((sum, day) => sum + day.konwersja, 0) / teamPerformanceTrends.length) || 0}%)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-orange-400 rounded-full"></div>
+                    <span className="text-slate-400">Klienci ({teamPerformanceTrends.reduce((sum, day) => sum + day.klienci, 0)})</span>
+                  </div>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -402,7 +489,9 @@ export function GeneralReports() {
                 <div className="text-sm text-slate-400">Łączne zmiany statusów</div>
               </div>
               <div className="text-center p-4 bg-slate-700/50 rounded-lg">
-                <div className="text-2xl font-bold text-yellow-400">{Math.round(overallStats.totalPhoneCalls / overallStats.totalEmployees)}</div>
+                <div className="text-2xl font-bold text-yellow-400">
+                  {phoneClicksLoading ? '...' : Math.round(phoneClicksStats.totalPhoneCalls / overallStats.totalEmployees)}
+                </div>
                 <div className="text-sm text-slate-400">Średnio telefonów/pracownik</div>
               </div>
               <div className="text-center p-4 bg-slate-700/50 rounded-lg">

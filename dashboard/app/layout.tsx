@@ -3,15 +3,15 @@ import type { Metadata } from "next"
 import { Inter } from "next/font/google"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
-import { AuthProvider } from "@/components/auth/auth-provider"
+import { EnhancedAuthProvider } from "@/components/auth/enhanced-auth-provider"
 import { LanguageProvider } from "@/lib/language-context"
 import { Toaster } from "@/components/ui/toaster"
 
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "CRM Call Center",
-  description: "System zarządzania klientami dla call center",
+  title: "Spectres Group",
+  description: "System zarządzania klientami Spectres Group",
   generator: 'v0.dev'
 }
 
@@ -29,11 +29,11 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <AuthProvider>
+          <EnhancedAuthProvider>
             <LanguageProvider>
               {children}
             </LanguageProvider>
-          </AuthProvider>
+          </EnhancedAuthProvider>
           <Toaster />
         </ThemeProvider>
       </body>

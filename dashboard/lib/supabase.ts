@@ -2031,6 +2031,663 @@ export const reportsApi = {
     }
   },
 
+  // Pobierz trendy sprzedażowe z ostatnich 7 dni
+  async getSalesTrends(user: User): Promise<Array<{ day: string, canvas: number, sale: number, antysale: number }>> {
+    try {
+      console.log('📈 Pobieranie trendów sprzedażowych z ostatnich 7 dni...')
+      
+      // Pobierz dane z ostatnich 7 dni
+      const endDate = new Date()
+      const startDate = new Date()
+      startDate.setDate(endDate.getDate() - 6) // 7 dni wstecz (włącznie z dzisiaj)
+      
+      const { data, error } = await supabase
+        .from('clients')
+        .select('status, updated_at, status_changed_at, owner_id, edited_by')
+        .gte('updated_at', startDate.toISOString().split('T')[0])
+        .lte('updated_at', endDate.toISOString().split('T')[0] + 'T23:59:59')
+        .in('status', ['canvas', 'sale', 'antysale'])
+        .order('updated_at', { ascending: true })
+
+      if (error) {
+        console.error('❌ Błąd pobierania trendów sprzedażowych:', error)
+        throw error
+      }
+
+      console.log(`✅ Pobrano ${data?.length || 0} rekordów z ostatnich 7 dni`)
+
+      // Filtruj klientów według uprawnień użytkownika
+      let filteredData = data || []
+      if (user.role === 'pracownik') {
+        filteredData = filteredData.filter(client => 
+          client.owner_id === user.id || 
+          client.owner_id === null || 
+          client.edited_by === user.id
+        )
+      }
+
+      // Stwórz mapę dla dni tygodnia
+      const dayNames = ['Ndz', 'Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob']
+      const trends: Record<string, { canvas: number, sale: number, antysale: number }> = {}
+
+      // Inicjalizuj ostatnie 7 dni
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date()
+        date.setDate(date.getDate() - i)
+        const dayName = dayNames[date.getDay()]
+        trends[dayName] = { canvas: 0, sale: 0, antysale: 0 }
+      }
+
+      // Grupuj dane według dni
+      filteredData.forEach(client => {
+        const date = new Date(client.updated_at)
+        const dayName = dayNames[date.getDay()]
+        
+        if (trends[dayName]) {
+          if (client.status === 'canvas') trends[dayName].canvas++
+          else if (client.status === 'sale') trends[dayName].sale++
+          else if (client.status === 'antysale') trends[dayName].antysale++
+        }
+      })
+
+      // Przekształć na format dla wykresu (ostatnie 7 dni w kolejności)
+      const result = []
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date()
+        date.setDate(date.getDate() - i)
+        const dayName = dayNames[date.getDay()]
+        result.push({
+          day: dayName,
+          canvas: trends[dayName].canvas,
+          sale: trends[dayName].sale,
+          antysale: trends[dayName].antysale
+        })
+      }
+
+      console.log('✅ Trendy sprzedażowe przygotowane:', result)
+      return result
+
+    } catch (error) {
+      console.error('❌ Błąd pobierania trendów sprzedażowych:', error)
+      // W przypadku błędu zwróć puste dane dla ostatnich 7 dni
+      const dayNames = ['Ndz', 'Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob']
+      const result = []
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date()
+        date.setDate(date.getDate() - i)
+        const dayName = dayNames[date.getDay()]
+        result.push({
+          day: dayName,
+          canvas: 0,
+          sale: 0,
+          antysale: 0
+        })
+      }
+      return result
+    }
+  },
+
+  // Pobierz statystyki kliknięć telefonu tylko dla pracowników
+  async getPhoneClicksStats(user: User): Promise<{ totalPhoneCalls: number, totalPhoneCallsToday: number }> {
+    try {
+      console.log('📞 Pobieranie statystyk kliknięć telefonu...')
+      
+      // Pobierz wszystkich pracowników
+      const { data: employees, error: employeesError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('role', 'pracownik')
+
+      if (employeesError) {
+        console.error('❌ Błąd pobierania pracowników:', employeesError)
+        throw employeesError
+      }
+
+      const employeeIds = (employees || []).map(emp => emp.id)
+      console.log(`👥 Znaleziono ${employeeIds.length} pracowników`)
+
+      if (employeeIds.length === 0) {
+        return { totalPhoneCalls: 0, totalPhoneCallsToday: 0 }
+      }
+
+      // Pobierz wszystkie kliknięcia telefonu z activity_logs tylko dla pracowników
+      const { data: allPhoneClicks, error: allClicksError } = await supabase
+        .from('activity_logs')
+        .select('id, changed_by, timestamp')
+        .eq('field_changed', 'last_phone_click')
+        .in('changed_by', employeeIds)
+
+      if (allClicksError) {
+        console.error('❌ Błąd pobierania kliknięć telefonu:', allClicksError)
+        throw allClicksError
+      }
+
+      const totalPhoneCalls = allPhoneClicks?.length || 0
+
+      // Pobierz dzisiejsze kliknięcia telefonu
+      const today = new Date().toISOString().split('T')[0] // YYYY-MM-DD
+      const { data: todayPhoneClicks, error: todayClicksError } = await supabase
+        .from('activity_logs')
+        .select('id, changed_by, timestamp')
+        .eq('field_changed', 'last_phone_click')
+        .in('changed_by', employeeIds)
+        .gte('timestamp', `${today}T00:00:00`)
+        .lt('timestamp', `${today}T23:59:59`)
+
+      if (todayClicksError) {
+        console.error('❌ Błąd pobierania dzisiejszych kliknięć telefonu:', todayClicksError)
+        throw todayClicksError
+      }
+
+      const totalPhoneCallsToday = todayPhoneClicks?.length || 0
+
+      console.log(`✅ Statystyki kliknięć telefonu: łącznie ${totalPhoneCalls}, dziś ${totalPhoneCallsToday}`)
+      
+      return {
+        totalPhoneCalls,
+        totalPhoneCallsToday
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd pobierania statystyk kliknięć telefonu:', error)
+      // W przypadku błędu zwróć zerowe statystyki
+      return { totalPhoneCalls: 0, totalPhoneCallsToday: 0 }
+    }
+  },
+
+  // Pobierz dane trendów wydajności zespołu z ostatnich 7 dni
+  async getTeamPerformanceTrends(user: User): Promise<Array<{ day: string, telefony: number, konwersja: number, klienci: number }>> {
+    try {
+      console.log('📊 Pobieranie trendów wydajności zespołu z ostatnich 7 dni...')
+      
+      // Pobierz wszystkich pracowników
+      const { data: employees, error: employeesError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('role', 'pracownik')
+
+      if (employeesError) {
+        console.error('❌ Błąd pobierania pracowników:', employeesError)
+        throw employeesError
+      }
+
+      const employeeIds = (employees || []).map(emp => emp.id)
+      console.log(`👥 Znaleziono ${employeeIds.length} pracowników`)
+
+      if (employeeIds.length === 0) {
+        // Zwróć puste dane dla ostatnich 7 dni
+        const dayNames = ['Ndz', 'Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob']
+        const result = []
+        for (let i = 6; i >= 0; i--) {
+          const date = new Date()
+          date.setDate(date.getDate() - i)
+          const dayName = dayNames[date.getDay()]
+          result.push({
+            day: dayName,
+            telefony: 0,
+            konwersja: 0,
+            klienci: 0
+          })
+        }
+        return result
+      }
+
+      // Pobierz dane z ostatnich 7 dni
+      const endDate = new Date()
+      const startDate = new Date()
+      startDate.setDate(endDate.getDate() - 6) // 7 dni wstecz (włącznie z dzisiaj)
+      
+      // 1. Pobierz kliknięcia telefonu z activity_logs (tylko pracownicy)
+      const { data: phoneClicks, error: phoneError } = await supabase
+        .from('activity_logs')
+        .select('changed_by, timestamp')
+        .eq('field_changed', 'last_phone_click')
+        .in('changed_by', employeeIds)
+        .gte('timestamp', startDate.toISOString().split('T')[0])
+        .lte('timestamp', endDate.toISOString().split('T')[0] + 'T23:59:59')
+
+      if (phoneError) {
+        console.error('❌ Błąd pobierania kliknięć telefonu:', phoneError)
+        throw phoneError
+      }
+
+      // 2. Pobierz zmiany klientów z ostatnich 7 dni (tylko przez pracowników)
+      const { data: clientChanges, error: changesError } = await supabase
+        .from('clients')
+        .select('updated_at, status, edited_by')
+        .in('edited_by', employeeIds)
+        .gte('updated_at', startDate.toISOString().split('T')[0])
+        .lte('updated_at', endDate.toISOString().split('T')[0] + 'T23:59:59')
+        .order('updated_at', { ascending: true })
+
+      if (changesError) {
+        console.error('❌ Błąd pobierania zmian klientów:', changesError)
+        throw changesError
+      }
+
+      console.log(`✅ Pobrano ${phoneClicks?.length || 0} kliknięć telefonu i ${clientChanges?.length || 0} zmian klientów`)
+
+      // Stwórz mapę dla dni tygodnia
+      const dayNames = ['Ndz', 'Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob']
+      const trendsData: Record<string, { telefony: number, klienci: number, sales: number }> = {}
+
+      // Inicjalizuj ostatnie 7 dni
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date()
+        date.setDate(date.getDate() - i)
+        const dayName = dayNames[date.getDay()]
+        trendsData[dayName] = { telefony: 0, klienci: 0, sales: 0 }
+      }
+
+             // Grupuj kliknięcia telefonu według dni
+       if (phoneClicks && Array.isArray(phoneClicks)) {
+         phoneClicks.forEach((click: any) => {
+           const date = new Date(click.timestamp)
+           const dayName = dayNames[date.getDay()]
+           if (trendsData[dayName]) {
+             trendsData[dayName].telefony++
+           }
+         })
+       }
+
+       // Grupuj zmiany klientów według dni
+       if (clientChanges && Array.isArray(clientChanges)) {
+         clientChanges.forEach((change: any) => {
+           const date = new Date(change.updated_at)
+           const dayName = dayNames[date.getDay()]
+           if (trendsData[dayName]) {
+             trendsData[dayName].klienci++
+             if (change.status === 'sale') {
+               trendsData[dayName].sales++
+             }
+           }
+         })
+       }
+
+      // Przekształć na format dla wykresu (ostatnie 7 dni w kolejności)
+      const result = []
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date()
+        date.setDate(date.getDate() - i)
+        const dayName = dayNames[date.getDay()]
+        const dayData = trendsData[dayName]
+        
+        // Oblicz konwersję (procent sales względem wszystkich klientów)
+        const konwersja = dayData.klienci > 0 ? Math.round((dayData.sales / dayData.klienci) * 100) : 0
+        
+        result.push({
+          day: dayName,
+          telefony: dayData.telefony,
+          konwersja: konwersja,
+          klienci: dayData.klienci
+        })
+      }
+
+      console.log('✅ Trendy wydajności zespołu przygotowane:', result)
+      return result
+
+    } catch (error) {
+      console.error('❌ Błąd pobierania trendów wydajności zespołu:', error)
+      // W przypadku błędu zwróć puste dane dla ostatnich 7 dni
+      const dayNames = ['Ndz', 'Pon', 'Wt', 'Śr', 'Czw', 'Pt', 'Sob']
+      const result = []
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date()
+        date.setDate(date.getDate() - i)
+        const dayName = dayNames[date.getDay()]
+        result.push({
+          day: dayName,
+          telefony: 0,
+          konwersja: 0,
+          klienci: 0
+        })
+      }
+      return result
+    }
+  },
+
+  // API dla statystyk osobistych pracownika
+  async getMyPersonalStats(user: User): Promise<{
+    phoneCallsThisMonth: number,
+    clientStats: { status: string, count: number, color: string }[],
+    totalClients: number,
+    commissionTotal: number,
+    workingHoursThisMonth: { day: string, hours: number }[],
+    totalWorkingHours: number,
+    totalWorkingDays: number
+  }> {
+    try {
+      console.log('📊 Pobieranie osobistych statystyk pracownika:', user.id, user.role)
+      
+      // Sprawdź czy użytkownik to pracownik
+      if (user.role !== 'pracownik') {
+        console.error('❌ Nieautoryzowana rola:', user.role)
+        throw new Error('Dostęp tylko dla pracowników')
+      }
+      
+      console.log('✅ Użytkownik autoryzowany jako pracownik')
+
+      const currentDate = new Date()
+      const currentMonth = currentDate.toISOString().slice(0, 7) // YYYY-MM
+      
+      // Ustaw pierwszy i ostatni dzień miesiąca prawidłowo
+      const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1)
+      const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59)
+      
+      // 1. Pobierz liczbę telefonów w tym miesiącu (kliknięcia telefonu)
+      const { data: phoneClicks, error: phoneError } = await supabase
+        .from('activity_logs')
+        .select('id, timestamp')
+        .eq('changed_by', user.id)
+        .eq('field_changed', 'last_phone_click')
+        .gte('timestamp', startOfMonth.toISOString())
+        .lte('timestamp', endOfMonth.toISOString())
+
+      if (phoneError) {
+        console.error('❌ Błąd pobierania kliknięć telefonu:', phoneError)
+        throw phoneError
+      }
+
+      const phoneCallsThisMonth = phoneClicks?.length || 0
+      console.log(`📞 Znaleziono ${phoneCallsThisMonth} kliknięć telefonu w tym miesiącu`)
+
+      // 2. Pobierz klientów przypisanych do pracownika
+      console.log('👥 Pobieranie klientów przypisanych do pracownika...')
+      const { data: myClients, error: clientsError } = await supabase
+        .from('clients')
+        .select('id, status, first_name, last_name, company_name')
+        .eq('owner_id', user.id)
+
+      if (clientsError) {
+        console.error('❌ Błąd pobierania klientów:', clientsError)
+        throw clientsError
+      }
+
+      const clients = myClients || []
+      const totalClients = clients.length
+      console.log(`👤 Pracownik ma ${totalClients} przypisanych klientów`)
+
+      // 3. Agreguj statusy klientów
+      console.log('📊 Agregowanie statusów klientów...')
+      const statusMap = new Map<string, number>()
+      clients.forEach(client => {
+        const status = client.status
+        statusMap.set(status, (statusMap.get(status) || 0) + 1)
+      })
+      console.log('📈 Statusy klientów:', Object.fromEntries(statusMap))
+
+      // Mapuj statusy na kolory
+      const statusColors: Record<string, string> = {
+        canvas: '#06b6d4',
+        sale: '#10b981',
+        antysale: '#f59e0b',
+        brak_kontaktu: '#6b7280',
+        nie_zainteresowany: '#ef4444',
+        zdenerwowany: '#dc2626',
+        '$$': '#fbbf24'
+      }
+
+      const clientStats = Array.from(statusMap.entries()).map(([status, count]) => ({
+        status,
+        count,
+        color: statusColors[status] || '#64748b'
+      }))
+
+      // 4. Oblicz prowizję (tylko za klientów ze statusem 'sale')
+      const saleClients = statusMap.get('sale') || 0
+      const commissionPerSale = 200 // 200 zł za każdego klienta sale
+      const commissionTotal = saleClients * commissionPerSale
+
+      // 5. Pobierz godziny pracy z tego miesiąca na podstawie activity_logs
+      console.log('⏰ Pobieranie aktywności z tego miesiąca...')
+      console.log(`📅 Zakres dat: ${startOfMonth.toISOString()} - ${endOfMonth.toISOString()}`)
+      const { data: activities, error: activitiesError } = await supabase
+        .from('activity_logs')
+        .select('timestamp')
+        .eq('changed_by', user.id)
+        .gte('timestamp', startOfMonth.toISOString())
+        .lte('timestamp', endOfMonth.toISOString())
+        .order('timestamp', { ascending: true })
+
+      if (activitiesError) {
+        console.error('❌ Błąd pobierania aktywności:', activitiesError)
+        throw activitiesError
+      }
+
+      console.log(`⏰ Znaleziono ${activities?.length || 0} aktywności w tym miesiącu`)
+
+      // Grupuj aktywności według dni i oblicz godziny pracy
+      console.log('📅 Grupowanie aktywności według dni...')
+      const dailyActivities = new Map<string, Set<number>>()
+      
+      if (activities && activities.length > 0) {
+        activities.forEach(activity => {
+          const date = new Date(activity.timestamp)
+          const day = date.toISOString().split('T')[0] // YYYY-MM-DD
+          const hour = date.getHours()
+          
+          if (!dailyActivities.has(day)) {
+            dailyActivities.set(day, new Set())
+          }
+          dailyActivities.get(day)!.add(hour)
+        })
+      }
+
+      // Przekształć na format dla wykresu
+      const workingHoursThisMonth = Array.from(dailyActivities.entries())
+        .map(([day, hours]) => ({
+          day: new Date(day).toLocaleDateString('pl-PL', { weekday: 'short', day: 'numeric' }),
+          hours: hours.size,
+          sortDate: new Date(day) // Dodaj pole do sortowania
+        }))
+        .sort((a, b) => a.sortDate.getTime() - b.sortDate.getTime())
+        .map(({ day, hours }) => ({ day, hours })) // Usuń pole sortDate z wynikowych danych
+
+      const totalWorkingHours = Array.from(dailyActivities.values())
+        .reduce((sum, hours) => sum + hours.size, 0)
+      
+      const totalWorkingDays = dailyActivities.size
+
+      console.log('✅ Statystyki osobiste przygotowane:', {
+        phoneCallsThisMonth,
+        totalClients,
+        commissionTotal,
+        totalWorkingHours,
+        totalWorkingDays
+      })
+
+      return {
+        phoneCallsThisMonth,
+        clientStats,
+        totalClients,
+        commissionTotal,
+        workingHoursThisMonth,
+        totalWorkingHours,
+        totalWorkingDays
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd pobierania osobistych statystyk:', error)
+      
+      // Szczegółowe informacje o błędzie
+      if (error && typeof error === 'object') {
+        console.error('📋 Szczegóły błędu:', {
+          message: (error as any).message,
+          code: (error as any).code,
+          details: (error as any).details,
+          hint: (error as any).hint,
+          stack: (error as any).stack
+        })
+      }
+      
+      // Jeśli to błąd RLS lub uprawnień, zwróć pustą strukturę zamiast crashować
+      if (error && typeof error === 'object' && 
+          ((error as any).code === 'PGRST116' || 
+           (error as any).message?.includes('RLS') || 
+           (error as any).message?.includes('permission'))) {
+        console.warn('🔒 Problem z uprawnieniami - zwracam domyślne dane')
+        return {
+          phoneCallsThisMonth: 0,
+          clientStats: [],
+          totalClients: 0,
+          commissionTotal: 0,
+          workingHoursThisMonth: [],
+          totalWorkingHours: 0,
+          totalWorkingDays: 0
+        }
+      }
+      
+      throw error
+    }
+  },
+
+  // Funkcje do zarządzania godzinami pracy pracownika
+  async saveWorkingHours(user: User, date: string, hours: number): Promise<void> {
+    try {
+      console.log(`⏰ Zapisywanie godzin pracy: ${hours}h dla dnia ${date}`)
+      
+      // Sprawdź czy użytkownik to pracownik
+      if (user.role !== 'pracownik') {
+        throw new Error('Dostęp tylko dla pracowników')
+      }
+
+      // Sprawdź czy to dzień roboczy (pon-pt)
+      const dayOfWeek = new Date(date).getDay()
+      if (dayOfWeek === 0 || dayOfWeek === 6) { // 0 = niedziela, 6 = sobota
+        throw new Error('Można wpisywać godziny tylko dla dni roboczych (pon-pt)')
+      }
+
+      // Walidacja godzin (0-12)
+      if (hours < 0 || hours > 12) {
+        throw new Error('Liczba godzin musi być między 0 a 12')
+      }
+
+      // Upsert godzin pracy w bazie danych (tabela już istnieje)
+      const { error } = await supabase
+        .from('working_hours')
+        .upsert({
+          user_id: user.id,
+          work_date: date,
+          hours_worked: hours,
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'user_id,work_date'
+        })
+
+      if (error) {
+        console.error('❌ Błąd zapisywania godzin pracy do bazy:', error)
+        
+        // Fallback do localStorage tylko przy błędzie bazy danych
+        console.warn('⚠️ Błąd bazy danych - używam localStorage jako fallback')
+        const storageKey = `working_hours_${user.id}`
+        const existingData = JSON.parse(localStorage.getItem(storageKey) || '{}')
+        existingData[date] = hours
+        localStorage.setItem(storageKey, JSON.stringify(existingData))
+        console.log(`✅ Zapisano ${hours}h dla dnia ${date} (localStorage fallback)`)
+        return
+      }
+
+      console.log(`✅ Zapisano ${hours}h dla dnia ${date} (baza danych working_hours)`)
+    } catch (error) {
+      console.error('❌ Błąd w saveWorkingHours:', error)
+      
+      // Ultimate fallback - localStorage
+      try {
+        console.warn('⚠️ Używam localStorage jako ostateczny fallback')
+        const storageKey = `working_hours_${user.id}`
+        const existingData = JSON.parse(localStorage.getItem(storageKey) || '{}')
+        existingData[date] = hours
+        localStorage.setItem(storageKey, JSON.stringify(existingData))
+        console.log(`✅ Zapisano ${hours}h dla dnia ${date} (localStorage ultimate fallback)`)
+      } catch (storageError) {
+        console.error('❌ Nie udało się zapisać nawet do localStorage:', storageError)
+        throw error
+      }
+    }
+  },
+
+  async getWorkingHoursForMonth(user: User, year: number, month: number): Promise<Record<string, number>> {
+    try {
+      console.log(`⏰ Pobieranie godzin pracy dla ${year}-${month}`)
+      
+      // Sprawdź czy użytkownik to pracownik
+      if (user.role !== 'pracownik') {
+        throw new Error('Dostęp tylko dla pracowników')
+      }
+
+      // Oblicz pierwszy i ostatni dzień miesiąca
+      const startDate = new Date(year, month - 1, 1)
+      const endDate = new Date(year, month, 0)
+
+      // Pobierz godziny pracy z tabeli working_hours (tabela już istnieje)
+      const { data, error } = await supabase
+        .from('working_hours')
+        .select('work_date, hours_worked')
+        .eq('user_id', user.id)
+        .gte('work_date', startDate.toISOString().split('T')[0])
+        .lte('work_date', endDate.toISOString().split('T')[0])
+
+      if (error) {
+        console.error('❌ Błąd pobierania godzin pracy z bazy:', error)
+        console.warn('⚠️ Błąd bazy danych - używam localStorage jako fallback')
+        
+        // Fallback do localStorage tylko przy błędzie bazy danych
+        const storageKey = `working_hours_${user.id}`
+        const storedData = JSON.parse(localStorage.getItem(storageKey) || '{}')
+        
+        // Filtruj dane dla odpowiedniego miesiąca
+        const hoursMap: Record<string, number> = {}
+        Object.entries(storedData).forEach(([date, hours]) => {
+          const dateObj = new Date(date)
+          if (dateObj >= startDate && dateObj <= endDate) {
+            hoursMap[date] = hours as number
+          }
+        })
+        
+        console.log(`✅ Pobrano godziny pracy z localStorage fallback dla ${Object.keys(hoursMap).length} dni`)
+        return hoursMap
+      }
+
+      // Konwertuj na obiekt date -> hours
+      const hoursMap: Record<string, number> = {}
+      if (data) {
+        data.forEach(entry => {
+          hoursMap[entry.work_date] = entry.hours_worked
+        })
+      }
+
+      console.log(`✅ Pobrano godziny pracy z tabeli working_hours dla ${data?.length || 0} dni`)
+      return hoursMap
+    } catch (error) {
+      console.error('❌ Błąd w getWorkingHoursForMonth:', error)
+      
+      // Ultimate fallback - localStorage
+      try {
+        console.warn('⚠️ Używam localStorage jako ostateczny fallback')
+        const storageKey = `working_hours_${user.id}`
+        const storedData = JSON.parse(localStorage.getItem(storageKey) || '{}')
+        
+        // Filtruj dane dla odpowiedniego miesiąca
+        const startDate = new Date(year, month - 1, 1)
+        const endDate = new Date(year, month, 0)
+        const hoursMap: Record<string, number> = {}
+        
+        Object.entries(storedData).forEach(([date, hours]) => {
+          const dateObj = new Date(date)
+          if (dateObj >= startDate && dateObj <= endDate) {
+            hoursMap[date] = hours as number
+          }
+        })
+        
+        console.log(`✅ Pobrano godziny pracy z localStorage ultimate fallback dla ${Object.keys(hoursMap).length} dni`)
+        return hoursMap
+      } catch (storageError) {
+        console.error('❌ Nie udało się pobrać nawet z localStorage:', storageError)
+        return {}
+      }
+    }
+  },
+
   // 🚀 NOWE FUNKCJE PERFORMANCE - Materializowane Widoki
 
   // Zastępuje ciężkie JOIN'y - teraz natychmiastowe ładowanie

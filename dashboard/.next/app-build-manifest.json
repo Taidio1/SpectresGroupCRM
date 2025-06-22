@@ -6,6 +6,11 @@
       "static/css/app/layout.css",
       "static/chunks/app/layout.js"
     ],
+    "/my-stats/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/my-stats/page.js"
+    ],
     "/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
@@ -16,15 +21,10 @@
       "static/chunks/main-app.js",
       "static/chunks/app/clients/page.js"
     ],
-    "/reports/general/page": [
+    "/calendar/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/reports/general/page.js"
-    ],
-    "/reports/details/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/reports/details/page.js"
+      "static/chunks/app/calendar/page.js"
     ]
   }
 }

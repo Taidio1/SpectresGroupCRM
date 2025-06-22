@@ -354,6 +354,7 @@ function CalendarContent() {
                   selected={selectedDate}
                   onSelect={handleDateChange}
                   className="w-full"
+                  weekStartsOn={1}
                   classNames={{
                     months: "flex flex-col space-y-4",
                     month: "space-y-4",

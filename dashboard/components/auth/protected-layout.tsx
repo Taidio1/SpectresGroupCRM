@@ -33,7 +33,7 @@ export function ProtectedLayout({ children, title, subtitle }: ProtectedLayoutPr
         {(title || subtitle) && (
           <Header 
             title={title || `Witaj, ${user.full_name}!`}
-            subtitle={subtitle || "Dashboard CRM Call Center"}
+            subtitle={subtitle || "Dashboard Spectres Group"}
           />
         )}
         {children}

@@ -13,6 +13,7 @@ import {
   Users,
   User,
   FileText,
+  Award,
 } from "lucide-react"
 import { authApi } from "@/lib/supabase"
 import { useAuth } from "@/store/useStore"
@@ -20,13 +21,30 @@ import { useToast } from "@/hooks/use-toast"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 
-const navigationItems = [
-  { icon: Home, label: "Dashboard", href: "/" },
-  { icon: Users, label: "Klienci", href: "/clients" },
-  { icon: BarChart3, label: "Raporty - Ogólne", href: "/reports/general" },
-  { icon: FileText, label: "Raport - Szczegóły", href: "/reports/details" },
-  { icon: Calendar, label: "Kalendarz", href: "/calendar" },
-]
+const getNavigationItems = (userRole?: string) => {
+  const baseItems = [
+    { icon: Home, label: "Dashboard", href: "/" },
+    { icon: Users, label: "Klienci", href: "/clients" },
+  ]
+
+  // Moje statystyki - tylko dla pracowników
+  if (userRole === 'pracownik') {
+    baseItems.push({ icon: Award, label: "Moje statystyki", href: "/my-stats" })
+  }
+
+  // Raporty - dla manager, szef, admin
+  if (userRole && ['manager', 'szef', 'admin'].includes(userRole)) {
+    baseItems.push(
+      { icon: BarChart3, label: "Raporty - Ogólne", href: "/reports/general" },
+      { icon: FileText, label: "Raport - Szczegóły", href: "/reports/details" }
+    )
+  }
+
+  // Kalendarz - dla wszystkich
+  baseItems.push({ icon: Calendar, label: "Kalendarz", href: "/calendar" })
+
+  return baseItems
+}
 
 export function Sidebar() {
   const pathname = usePathname()
@@ -68,7 +86,7 @@ export function Sidebar() {
         <div className="h-8 w-8 rounded bg-cyan-500 flex items-center justify-center">
           <Phone className="h-4 w-4 text-white" />
         </div>
-        <span className="text-xl font-semibold text-white">CRM Call Center</span>
+                    <span className="text-xl font-semibold text-white">Spectres Group</span>
       </div>
 
       {/* Informacje o użytkowniku */}
@@ -109,7 +127,7 @@ export function Sidebar() {
       )}
 
       <nav className="space-y-2">
-        {navigationItems.map((item, index) => {
+        {getNavigationItems(user?.role).map((item: { icon: any, label: string, href: string }, index: number) => {
           const isActive = pathname === item.href
           return (
             <Link key={index} href={item.href}>

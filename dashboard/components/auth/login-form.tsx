@@ -77,7 +77,7 @@ export function LoginForm() {
           Zaloguj się
         </CardTitle>
         <CardDescription className="text-center text-slate-400">
-          Wprowadź swoje dane aby uzyskać dostęp do systemu CRM
+                          Wprowadź swoje dane aby uzyskać dostęp do systemu Spectres Group
         </CardDescription>
       </CardHeader>
       <CardContent>

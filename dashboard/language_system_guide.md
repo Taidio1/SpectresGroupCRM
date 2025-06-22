@@ -1,6 +1,6 @@
 # Przewodnik po Systemie Języków
 
-## 🌐 Wielojęzyczność Aplikacji CRM
+## 🌐 Wielojęzyczność Aplikacji Spectres Group
 
 System obsługuje trzy języki:
 - **🇵🇱 Polski** (domyślny)

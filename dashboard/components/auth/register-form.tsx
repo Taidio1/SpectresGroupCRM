@@ -80,7 +80,7 @@ export function RegisterForm() {
           Utwórz konto
         </CardTitle>
         <CardDescription className="text-center text-slate-400">
-          Wypełnij formularz aby założyć konto w systemie CRM
+                          Wypełnij formularz aby założyć konto w systemie Spectres Group
         </CardDescription>
       </CardHeader>
       <CardContent>
