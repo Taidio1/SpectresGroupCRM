@@ -50,13 +50,14 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Progress } from "@/components/ui/progress"
 import { useAuth } from "@/store/useStore"
-import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUrl, csvImportApi, reportsApi } from "@/lib/supabase"
+import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUrl, csvImportApi, reportsApi, locationsApi } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { authApi, supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/language-context"
 import { logger } from "@/lib/logger"
 import { useDebounced } from "@/hooks/useDebounced"
 import { useProgressiveData, useSkeletonState } from "@/hooks/useProgressiveLoading"
+import { LocationFilter, LocationBadge, LocationHeader } from "@/components/location-filter"
 import { ClientTableSkeleton, BatchLoadingSkeleton, ContentFadeIn } from "@/components/ui/skeleton"
 import { LazyClientDetailsPopupWrapper, usePreloadComponent, preloadComponents } from "@/components/LazyComponents"
 
@@ -261,6 +262,10 @@ export function ClientsTable() {
   const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 100, status: '' })
   const [importResults, setImportResults] = useState<{ success: number, errors: any[] } | null>(null)
   const [columnAnalysis, setColumnAnalysis] = useState<{ found: string[], missing: string[], optional: string[] } | null>(null)
+  
+  // Stan dla wyboru lokalizacji podczas importu CSV
+  const [selectedImportLocation, setSelectedImportLocation] = useState<string | null>(null)
+  const [availableLocations, setAvailableLocations] = useState<any[]>([])
   const [currentUser] = useState('current_user')
   const [clientHistory, setClientHistory] = useState<ClientHistory[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -271,6 +276,7 @@ export function ClientsTable() {
   const debouncedSearchQuery = useDebounced(searchQuery, 300) // 300ms delay
   const [ownerFilter, setOwnerFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [locationFilter, setLocationFilter] = useState<string | null>(null) // Filtr lokalizacji
   const [availableOwners, setAvailableOwners] = useState<any[]>([])
   
   // Stan dla WSZYSTKICH użytkowników w systemie (do wyświetlania właścicieli)
@@ -730,6 +736,11 @@ export function ClientsTable() {
       filtered = filtered.filter(client => client.status === statusFilter)
     }
 
+    // 🌍 NOWY: Filtr lokalizacji
+    if (locationFilter) {
+      filtered = filtered.filter(client => client.location_id === locationFilter)
+    }
+
     // Zastosuj sortowanie
     const sorted = sortClients(filtered)
     setFilteredClients(sorted)
@@ -742,12 +753,12 @@ export function ClientsTable() {
   // 🚀 PERFORMANCE: Efekt filtrowania z debounced search
   useEffect(() => {
     filterClients()
-  }, [clients, debouncedSearchQuery, ownerFilter, statusFilter, sortField, sortDirection, currentPage, pageSize])
+  }, [clients, debouncedSearchQuery, ownerFilter, statusFilter, locationFilter, sortField, sortDirection, currentPage, pageSize])
 
   // Efekt resetowania strony przy zmianie filtrów - używa oryginalnego searchQuery dla natychmiastowej reakcji
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchQuery, ownerFilter, statusFilter])
+  }, [searchQuery, ownerFilter, statusFilter, locationFilter])
 
   // Funkcja do uzyskania opcji filtra właściciela na podstawie uprawnień
   const getOwnerFilterOptions = () => {
@@ -936,6 +947,12 @@ export function ClientsTable() {
       if (sortField === 'owner') {
         aValue = a.owner?.full_name || ''
         bValue = b.owner?.full_name || ''
+      }
+
+      // Obsługa sortowania po lokalizacji
+      if (sortField === 'location') {
+        aValue = a.location?.name || ''
+        bValue = b.location?.name || ''
       }
 
       // Obsługa sortowania po imię + nazwisko
@@ -1259,7 +1276,31 @@ export function ClientsTable() {
     }))
   }
 
-  const handleUploadFiles = () => {
+  const handleUploadFiles = async () => {
+    if (!user) return
+    
+    // Ładuj dostępne lokalizacje
+    try {
+      const locations = await locationsApi.getUserAccessibleLocations(user.id)
+      setAvailableLocations(locations)
+      
+      // Dla project managera automatycznie wybierz jego lokalizację
+      if (user.role === 'project_manager' || user.role === 'manager' || user.role === 'junior_manager' || user.role === 'pracownik') {
+        setSelectedImportLocation(user.location_id || null)
+      } else {
+        // Dla szefa/admina reset wyboru - będzie mógł wybrać w popup
+        setSelectedImportLocation(null)
+      }
+    } catch (error) {
+      console.error('❌ Błąd ładowania lokalizacji:', error)
+      toast({
+        title: "Błąd",
+        description: "Nie udało się załadować dostępnych lokalizacji",
+        variant: "destructive"
+      })
+      return
+    }
+    
     setIsUploadDialogOpen(true)
     setSelectedFile(null)
     setDragActive(false)
@@ -1384,7 +1425,8 @@ export function ClientsTable() {
       // Import CSV z progress callback
       const results = await csvImportApi.importCSV(
         selectedFile, 
-        user, 
+        user,
+        selectedImportLocation || undefined, // Lokalizacja (opcjonalna)
         (progress) => {
           setUploadProgress(progress)
         }
@@ -1433,32 +1475,26 @@ export function ClientsTable() {
     setSearchQuery('')
     setOwnerFilter('all')
     setStatusFilter('all')
+    setLocationFilter(null)
   }
 
-  // Funkcja do obsługi kliknięcia w telefon
+  // Funkcja do obsługi kliknięcia w telefon w tabeli - TYLKO otwiera popup
   const handlePhoneClick = async (client: any) => {
     if (!user) return
     
     try {
-      // Zaktualizuj czas ostatniego kliknięcia telefonu
-      await clientsApi.updateLastPhoneClick(client.id, user)
+      console.log(`📱 Otwieranie popupu dla klienta: ${client.first_name} ${client.last_name} (BEZ zliczania statystyk)`)
       
-      console.log(`📞 Zarejestrowano kliknięcie telefonu dla klienta: ${client.first_name} ${client.last_name}`)
-      
-      // Pokaż popup z detalami klienta
+      // TYLKO pokaż popup z detalami klienta - BEZ zliczania statystyk
       setSelectedClientForDetails(client)
       setIsDetailsPopupOpen(true)
       
     } catch (error) {
-      console.error('❌ Błąd rejestrowania kliknięcia telefonu:', error)
-      
-      // Nawet jeśli rejestracja się nie powiodła, pokaż popup
-      setSelectedClientForDetails(client)
-      setIsDetailsPopupOpen(true)
+      console.error('❌ Błąd otwierania popupu:', error)
       
       toast({
-        title: "Ostrzeżenie",
-        description: "Nie udało się zarejestrować kliknięcia telefonu",
+        title: "Błąd",
+        description: "Nie udało się otworzyć szczegółów klienta",
         variant: "destructive",
         duration: 3000
       })
@@ -1754,8 +1790,15 @@ export function ClientsTable() {
             </SelectContent>
           </Select>
           
+          {/* 🌍 NOWY: Filtr lokalizacji */}
+          <LocationFilter
+            selectedLocationId={locationFilter}
+            onLocationChange={setLocationFilter}
+            showAllOption={true}
+          />
+
           {/* Reset filtrów */}
-          {(searchQuery || ownerFilter !== 'all' || statusFilter !== 'all') && (
+          {(searchQuery || ownerFilter !== 'all' || statusFilter !== 'all' || locationFilter) && (
             <Button
               variant="outline"
               onClick={resetFilters}
@@ -1800,6 +1843,12 @@ export function ClientsTable() {
           </Button>
         </div>
       </div>
+
+      {/* 🌍 NOWY: Nagłówek lokalizacji */}
+      <LocationHeader
+        selectedLocationId={locationFilter}
+        showProjectManager={true}
+      />
 
       {/* Tabela klientów - pełna szerokość */}
       <Card className="bg-slate-800 border-slate-700">
@@ -1890,6 +1939,15 @@ export function ClientsTable() {
                         {getSortIcon('owner')}
                       </button>
                     </TableHead>
+                    <TableHead className="text-slate-400">
+                      <button
+                        onClick={() => handleSort('location')}
+                        className="flex items-center gap-2 hover:text-white transition-colors"
+                      >
+                        Kraj
+                        {getSortIcon('location')}
+                      </button>
+                    </TableHead>
                     <TableHead className="text-slate-400">Notatka</TableHead>
                     <TableHead className="text-slate-400">Przypomnienie</TableHead>
                     <TableHead className="text-slate-400">Akcje</TableHead>
@@ -1898,7 +1956,7 @@ export function ClientsTable() {
                 <TableBody>
                   {progressiveClients.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center py-8 text-slate-400">
+                      <TableCell colSpan={9} className="text-center py-8 text-slate-400">
                         Brak klientów do wyświetlenia
                       </TableCell>
                     </TableRow>
@@ -2109,6 +2167,32 @@ export function ClientsTable() {
                               )
                             })()}
                           </TooltipProvider>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <LocationBadge 
+                              location={client.location} 
+                              showCurrency={false}
+                              variant="outline"
+                            />
+                            {!client.location && client.location_id && (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger>
+                                    <Badge variant="outline" className="text-orange-400 border-orange-500/30">
+                                      {client.location_id.slice(0, 8)}...
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p>Lokalizacja niedostępna (ID: {client.location_id})</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            )}
+                            {!client.location && !client.location_id && (
+                              <span className="text-slate-500 text-sm">Brak</span>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="text-sm text-slate-300 max-w-[200px] truncate">
@@ -2879,6 +2963,61 @@ export function ClientsTable() {
           </DialogHeader>
           
           <div className="py-6">
+            {/* Wybór lokalizacji dla szefa/admina */}
+            {user && (user.role === 'szef' || user.role === 'admin') && availableLocations.length > 1 && (
+              <div className="mb-6 p-4 bg-slate-700 rounded-lg border border-slate-600">
+                <h4 className="text-white font-medium mb-3 flex items-center gap-2">
+                  <Building2 className="h-4 w-4" />
+                  Wybierz lokalizację dla importowanych klientów
+                </h4>
+                <Select 
+                  value={selectedImportLocation || ''} 
+                  onValueChange={setSelectedImportLocation}
+                >
+                  <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                    <SelectValue placeholder="Wybierz lokalizację..." />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-700 border-slate-600">
+                    {availableLocations.map((location) => (
+                      <SelectItem 
+                        key={location.id} 
+                        value={location.id}
+                        className="text-white hover:bg-slate-600"
+                      >
+                        <div className="flex items-center gap-2">
+                          <LocationBadge location={location} />
+                          <span>{location.name}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-slate-400 text-sm mt-2">
+                  Wszyscy importowani klienci zostaną przypisani do wybranej lokalizacji.
+                </p>
+              </div>
+            )}
+            
+            {/* Informacja o automatycznej lokalizacji dla innych ról */}
+            {user && !['szef', 'admin'].includes(user.role) && selectedImportLocation && (
+              <div className="mb-6 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                <h4 className="text-blue-400 font-medium mb-2 flex items-center gap-2">
+                  <Building2 className="h-4 w-4" />
+                  Lokalizacja importu
+                </h4>
+                <div className="flex items-center gap-2">
+                  {availableLocations.find(l => l.id === selectedImportLocation) && (
+                    <LocationBadge location={availableLocations.find(l => l.id === selectedImportLocation)!} />
+                  )}
+                  <span className="text-white">
+                    {availableLocations.find(l => l.id === selectedImportLocation)?.name}
+                  </span>
+                </div>
+                <p className="text-blue-400 text-sm mt-2">
+                  Klienci zostaną automatycznie przypisani do Twojej lokalizacji.
+                </p>
+              </div>
+            )}
             {/* Obszar drag & drop */}
             <div 
               className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
@@ -3076,10 +3215,17 @@ export function ClientsTable() {
             <Button
               onClick={handleFileUpload}
               className="bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={!selectedFile || isUploading || Boolean(columnAnalysis && columnAnalysis.missing.length > 0)}
+              disabled={
+                !selectedFile || 
+                isUploading || 
+                Boolean(columnAnalysis && columnAnalysis.missing.length > 0) ||
+                Boolean(user && (user.role === 'szef' || user.role === 'admin') && !selectedImportLocation)
+              }
               title={
                 (columnAnalysis && columnAnalysis.missing.length > 0) 
                   ? `Brakuje wymaganych kolumn: ${columnAnalysis.missing.join(', ')}`
+                  : Boolean(user && (user.role === 'szef' || user.role === 'admin') && !selectedImportLocation)
+                  ? 'Wybierz lokalizację dla importowanych klientów'
                   : undefined
               }
             >
@@ -3091,7 +3237,12 @@ export function ClientsTable() {
               ) : (
                 <>
                   <Upload className="h-4 w-4 mr-2" />
-                  {(columnAnalysis && columnAnalysis.missing.length > 0) ? 'Brak wymaganych kolumn' : 'Wczytaj CSV'}
+                  {(columnAnalysis && columnAnalysis.missing.length > 0) 
+                    ? 'Brak wymaganych kolumn' 
+                    : Boolean(user && (user.role === 'szef' || user.role === 'admin') && !selectedImportLocation)
+                    ? 'Wybierz lokalizację'
+                    : 'Wczytaj CSV'
+                  }
                 </>
               )}
             </Button>

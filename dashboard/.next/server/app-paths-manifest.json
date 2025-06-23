@@ -1,5 +1,4 @@
 {
-  "/api/admin/performance-check/route": "app/api/admin/performance-check/route.js",
-  "/page": "app/page.js",
-  "/admin/page": "app/admin/page.js"
+  "/clients/page": "app/clients/page.js",
+  "/page": "app/page.js"
 }

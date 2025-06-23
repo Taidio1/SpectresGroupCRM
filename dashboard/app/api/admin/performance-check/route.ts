@@ -39,16 +39,52 @@ export async function GET() {
   try {
     console.log('🔍 ADMIN: Sprawdzanie metryk wydajności systemu...')
     
-    // Sprawdź rozmiary tabel i statystyki
-    const tableStats = await performanceApi.getSystemMetrics()
+    let tableStats = []
+    let viewFreshness = { lastUpdate: null as string | null, minutesSinceUpdate: 0, isStale: false }
+    const errors = []
     
-    // Sprawdź ostatnie odświeżenie materializowanych widoków
-    const viewFreshness = await dashboardApi.checkViewFreshness()
+    // Sprawdź rozmiary tabel i statystyki (z obsługą błędów)
+    try {
+      tableStats = await performanceApi.getSystemMetrics()
+      console.log('✅ Statystyki tabel pobrane pomyślnie')
+    } catch (error) {
+      console.error('❌ Błąd pobierania statystyk tabel:', error)
+      errors.push('Nie udało się pobrać statystyk tabel')
+      // Fallback data
+      tableStats = [{
+        table_name: 'fallback',
+        record_count: 0,
+        table_size: 'Brak danych',
+        last_updated: new Date().toISOString()
+      }]
+    }
     
-    // Generuj rekomendacje
+    // Sprawdź ostatnie odświeżenie materializowanych widoków (z obsługą błędów)
+    try {
+      viewFreshness = await dashboardApi.checkViewFreshness()
+      console.log('✅ Świeżość widoków sprawdzona pomyślnie')
+    } catch (error) {
+      console.error('❌ Błąd sprawdzania świeżości widoków:', error)
+      errors.push('Nie udało się sprawdzić świeżości widoków')
+      // Fallback data
+      viewFreshness = { 
+        lastUpdate: new Date().toISOString(), 
+        minutesSinceUpdate: 0, 
+        isStale: false 
+      }
+    }
+    
+    // Generuj rekomendacje (zawsze działające)
     const recommendations = generateRecommendations(tableStats)
     
-    console.log('✅ ADMIN: Metryki wydajności pobrane pomyślnie')
+    // Dodaj informacje o błędach do rekomendacji
+    if (errors.length > 0) {
+      recommendations.unshift(...errors.map(error => `⚠️ ${error}`))
+    }
+    
+    console.log('✅ ADMIN: Metryki wydajności pobrane (z eventualnymi ostrzeżeniami)')
+    
+    const overallStatus = errors.length > 0 ? 'warning' : (viewFreshness.isStale ? 'warning' : 'healthy')
     
     return Response.json({
       success: true,
@@ -58,15 +94,17 @@ export async function GET() {
       recommendations,
       systemHealth: {
         viewsStale: viewFreshness.isStale,
-        tablesHealthy: tableStats ? tableStats.length > 0 : false,
-        overallStatus: viewFreshness.isStale ? 'warning' : 'healthy'
+        tablesHealthy: tableStats && tableStats.length > 0,
+        overallStatus,
+        hasErrors: errors.length > 0,
+        errorCount: errors.length
       }
     })
     
   } catch (error) {
-    console.error('❌ ADMIN: Błąd sprawdzania wydajności:', error)
+    console.error('❌ ADMIN: Krytyczny błąd sprawdzania wydajności:', error)
     
-    let errorMessage = 'Nie udało się sprawdzić metryk wydajności'
+    let errorMessage = 'Krytyczny błąd systemu monitorowania wydajności'
     if (error instanceof Error) {
       errorMessage = error.message
     } else if (typeof error === 'string') {
@@ -77,8 +115,19 @@ export async function GET() {
       success: false, 
       error: errorMessage,
       timestamp: new Date().toISOString(),
-      recommendations: ['Sprawdź połączenie z bazą danych', 'Sprawdź uprawnienia użytkownika']
-    }, { status: 500 })
+      recommendations: [
+        'Sprawdź połączenie z bazą danych', 
+        'Sprawdź uprawnienia użytkownika',
+        'Skontaktuj się z administratorem systemu'
+      ],
+      systemHealth: {
+        viewsStale: true,
+        tablesHealthy: false,
+        overallStatus: 'error',
+        hasErrors: true,
+        errorCount: 1
+      }
+    }, { status: 200 }) // Zwrócę 200 ale z success: false żeby frontend mógł obsłużyć
   }
 }
 

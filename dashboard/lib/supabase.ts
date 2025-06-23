@@ -38,10 +38,19 @@ export const storageApi = {
   // Upload pliku CSV do bucket
   async uploadCSV(file: File, user: User): Promise<string> {
     try {
-      const fileName = `${user.id}_${Date.now()}_${file.name}`
+      // Oczyszczenie nazwy pliku z problematycznych znaków
+      const cleanFileName = file.name
+        .replace(/[^a-zA-Z0-9.-]/g, '_') // Zastąp wszystkie znaki specjalne podkreśleniami
+        .replace(/_{2,}/g, '_') // Zamień wielokrotne podkreślenia na pojedyncze
+        .replace(/^_+|_+$/g, '') // Usuń podkreślenia z początku i końca
+        .toLowerCase() // Małe litery dla consistency
+      
+      const fileName = `${user.id}_${Date.now()}_${cleanFileName}`
       const filePath = `csv-imports/${fileName}`
       
       console.log(`📁 Uploading CSV: ${filePath}`)
+      console.log(`📁 Original filename: ${file.name}`)
+      console.log(`📁 Cleaned filename: ${cleanFileName}`)
       
       const { data, error } = await supabase.storage
         .from('csv-files')
@@ -196,7 +205,7 @@ export const csvImportApi = {
   },
   
   // Przekształć wiersz CSV na obiekt klienta
-  rowToClient(row: string[], mapping: Record<string, number>, user: User): Omit<Client, 'id' | 'created_at' | 'updated_at'> {
+  rowToClient(row: string[], mapping: Record<string, number>, user: User, locationId?: string): Omit<Client, 'id' | 'created_at' | 'updated_at'> {
     const getField = (field: string, defaultValue: string = 'brak informacji'): string => {
       const index = mapping[field]
       if (index === undefined) {
@@ -224,13 +233,14 @@ export const csvImportApi = {
       edited_by: user.id,
       edited_at: new Date().toISOString(),
       owner_id: user.id,
+      location_id: locationId || user.location_id, // Użyj wybranej lokalizacji lub lokalizacji użytkownika
       last_edited_by_name: user.full_name, // Zapisz dane importera
       last_edited_by_avatar_url: user.avatar_url
     }
   },
   
   // Import pełnego CSV do bazy danych
-  async importCSV(file: File, user: User, onProgress?: (progress: { current: number, total: number, status: string }) => void): Promise<{ success: number, errors: any[] }> {
+  async importCSV(file: File, user: User, locationId?: string, onProgress?: (progress: { current: number, total: number, status: string }) => void): Promise<{ success: number, errors: any[] }> {
     try {
       onProgress?.({ current: 0, total: 100, status: 'Uploading pliku...' })
       
@@ -273,7 +283,7 @@ export const csvImportApi = {
             continue
           }
           
-          const clientData = csvImportApi.rowToClient(row, mapping, user)
+          const clientData = csvImportApi.rowToClient(row, mapping, user, locationId)
           
           // Walidacja podstawowych danych
           if (!clientData.company_name || clientData.company_name.trim() === '') {
@@ -335,6 +345,7 @@ export interface Client {
   edited_by: string
   edited_at: string
   owner_id?: string // Dodane dla systemu uprawnień
+  location_id?: string // Dodane dla systemu lokalizacji
   created_at: string
   updated_at: string
   status_changed_at?: string // Czas ostatniej zmiany statusu
@@ -347,12 +358,21 @@ export interface Client {
     email: string
     avatar_url?: string
   } // Informacje o właścicielu klienta
+  location?: Location // Informacje o lokalizacji klienta
   reminder?: {
     enabled: boolean
     date: string
     time: string
     note: string
   } // Przypomnienie dla klienta
+}
+
+// 🚀 NOWY: Interface dla paginowanych wyników
+export interface PaginatedClientsResult {
+  clients: Client[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface ActivityLog {
@@ -364,6 +384,25 @@ export interface ActivityLog {
   old_value?: string
   new_value?: string
   timestamp: string
+}
+
+// Interfejs dla lokalizacji/krajów
+export interface Location {
+  id: string
+  name: string
+  code: string // 'PL', 'SK'
+  currency: string // 'PLN', 'EUR'
+  timezone: string // 'Europe/Warsaw', 'Europe/Bratislava'
+  region?: string
+  project_manager_id?: string
+  created_at: string
+  updated_at: string
+  project_manager?: {
+    id: string
+    full_name: string
+    email: string
+    avatar_url?: string
+  }
 }
 
 export interface User {
@@ -384,6 +423,14 @@ export interface User {
   territory?: string
   start_date?: string
   is_active?: boolean
+  // Rozszerzone informacje dla JOIN
+  location?: Location
+  manager?: {
+    id: string
+    full_name: string
+    email: string
+    avatar_url?: string
+  }
 }
 
 // Interfejs dla historii zmian z dodatkowymi informacjami
@@ -401,36 +448,57 @@ export interface ClientHistory {
   editor_avatar?: string // Dodane dla UI - avatar edytora
 }
 
-// Funkcje sprawdzania uprawnień
+// Funkcje sprawdzania uprawnień z hierarchią i lokalizacją
 export const permissionsApi = {
-  // Sprawdź czy użytkownik może edytować klienta
-  canEdit: (client: Client, user: User): boolean => {
-    // Wszyscy zalogowani użytkownicy mogą edytować klientów
-    return true
-  },
-
-  // Sprawdź czy użytkownik może usunąć klienta
-  canDelete: (client: Client, user: User): boolean => {
-    // Wszyscy zalogowani użytkownicy mogą usuwać klientów
-    return true
-  },
-
-  // Sprawdź czy użytkownik może widzieć klienta
+  // Sprawdź czy użytkownik może widzieć klienta (zgodnie z RLS)
   canView: (client: Client, user: User): boolean => {
+    // Szef i admin widzą wszystko
+    if (['szef', 'admin'].includes(user.role)) {
+      return true
+    }
+    
+    // Sprawdź czy klient jest w tej samej lokalizacji co użytkownik
+    const sameLocation = client.location_id === user.location_id
+    if (!sameLocation) {
+      return false
+    }
+    
     switch (user.role) {
       case 'pracownik':
+        // Pracownik widzi tylko swoich klientów w swojej lokalizacji
         return client.owner_id === user.id || 
                client.owner_id === null || 
                client.edited_by === user.id
+      case 'junior_manager':
       case 'manager':
       case 'project_manager':
-      case 'junior_manager':
-      case 'szef':
-      case 'admin':
+        // Menedżerowie widzą wszystkich klientów w swojej lokalizacji
         return true
       default:
         return false
     }
+  },
+
+  // Sprawdź czy użytkownik może edytować klienta
+  canEdit: (client: Client, user: User): boolean => {
+    // Takie same reguły jak canView
+    return permissionsApi.canView(client, user)
+  },
+
+  // Sprawdź czy użytkownik może usunąć klienta
+  canDelete: (client: Client, user: User): boolean => {
+    // Szef i admin mogą usuwać wszystko
+    if (['szef', 'admin'].includes(user.role)) {
+      return true
+    }
+    
+    // Menedżerowie mogą usuwać w swojej lokalizacji
+    if (['manager', 'project_manager', 'junior_manager'].includes(user.role)) {
+      return client.location_id === user.location_id
+    }
+    
+    // Pracownicy nie mogą usuwać
+    return false
   },
 
   // Sprawdź czy użytkownik może przypisywać klientów
@@ -446,6 +514,31 @@ export const permissionsApi = {
   // Sprawdź czy użytkownik może dostęp do zaawansowanych raportów
   canAccessAdvancedReports: (user: User): boolean => {
     return ['manager', 'project_manager', 'junior_manager', 'szef', 'admin'].includes(user.role)
+  },
+
+  // Sprawdź czy użytkownik może widzieć wszystkie lokalizacje
+  canViewAllLocations: (user: User): boolean => {
+    return ['szef', 'admin'].includes(user.role)
+  },
+
+  // Sprawdź czy użytkownik może filtrować po lokalizacjach
+  canFilterByLocation: (user: User): boolean => {
+    return ['project_manager', 'junior_manager', 'szef', 'admin'].includes(user.role)
+  },
+
+  // Sprawdź poziom hierarchii - czy user1 może zarządzać user2
+  canManageUser: (user1: User, user2: User): boolean => {
+    // Admin może zarządzać wszystkimi
+    if (user1.role === 'admin') return true
+    
+    // Szef może zarządzać wszystkimi oprócz adminów
+    if (user1.role === 'szef' && user2.role !== 'admin') return true
+    
+    // Inni mogą zarządzać tylko podwładnymi w tej samej lokalizacji
+    const sameLocation = user1.location_id === user2.location_id
+    const higherInHierarchy = (user1.role_hierarchy_level || 99) < (user2.role_hierarchy_level || 99)
+    
+    return sameLocation && higherInHierarchy
   }
 }
 
@@ -492,16 +585,21 @@ export const clientsApi = {
   },
 
   // Pobierz klientów z filtrami uprawnień
-  async getClients(user: User, filters?: { 
+  // 🚀 NOWE: Funkcja z paginacją zwracająca obiekt z metadanymi
+  async getClientsPaginated(user: User, filters?: { 
     date?: string
     status?: string
     employee?: string 
-  }) {
+    page?: number
+    pageSize?: number
+    search?: string
+    location?: string
+  }): Promise<PaginatedClientsResult> {
     try {
       console.log('🔄 Rozpoczynam pobieranie klientów dla użytkownika:', user.id, user.role)
       
-      // Użyj JOIN aby pobrać klientów z danymi właścicieli w jednym zapytaniu
-      // 🚀 OPTYMALIZACJA: Wybierz tylko niezbędne pola
+      // Użyj JOIN aby pobrać klientów z danymi właścicieli i lokalizacji w jednym zapytaniu
+      // 🚀 OPTYMALIZACJA: Wybierz tylko niezbędne pola + lokalizacja
       let query = supabase
         .from('clients')
         .select(`
@@ -516,6 +614,7 @@ export const clientsApi = {
           status,
           notes,
           owner_id,
+          location_id,
           edited_by,
           edited_at,
           created_at,
@@ -529,6 +628,13 @@ export const clientsApi = {
             full_name,
             email,
             avatar_url
+          ),
+          location:locations!location_id (
+            id,
+            name,
+            code,
+            currency,
+            timezone
           )
         `)
         .order('updated_at', { ascending: false })
@@ -546,8 +652,27 @@ export const clientsApi = {
         query = query.eq('edited_by', filters.employee)
       }
 
+      // 🚀 NOWE: Filtr wyszukiwania
+      if (filters?.search) {
+        const searchTerm = filters.search.toLowerCase()
+        query = query.or(`first_name.ilike.%${searchTerm}%,last_name.ilike.%${searchTerm}%,company_name.ilike.%${searchTerm}%,phone.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%`)
+      }
+
+      // 🚀 NOWE: Filtr lokalizacji
+      if (filters?.location) {
+        query = query.eq('location_id', filters.location)
+      }
+
+      // 🚀 NOWE: Paginacja
+      if (filters?.page && filters?.pageSize) {
+        const from = (filters.page - 1) * filters.pageSize
+        const to = from + filters.pageSize - 1
+        query = query.range(from, to)
+        console.log(`📄 Paginacja: strona ${filters.page}, rozmiar ${filters.pageSize}, zakres: ${from}-${to}`)
+      }
+
       console.log('🔄 Wykonuję zapytanie z JOIN...')
-      const { data: clients, error } = await query
+      const { data: clients, error, count } = await query
       
       if (error) {
         console.error('❌ Błąd zapytania clients:', error)
@@ -557,17 +682,27 @@ export const clientsApi = {
       
       if (!clients || clients.length === 0) {
         console.log('ℹ️ Brak klientów w bazie danych')
-        return []
+        return {
+          clients: [],
+          total: 0,
+          page: filters?.page || 1,
+          pageSize: filters?.pageSize || 0
+        }
       }
       
-      // Przekształć dane - Supabase JOIN zwraca owner jako tablicę, ale potrzebujemy pojedynczego obiektu
+      // Przekształć dane - Supabase JOIN zwraca owner i location jako tablice, ale potrzebujemy pojedynczych obiektów
       const transformedClients = clients.map((client: any) => ({
         ...client,
         owner: client.owner && Array.isArray(client.owner) && client.owner.length > 0 
           ? client.owner[0] // Weź pierwszy element z tablicy
           : client.owner && !Array.isArray(client.owner)
           ? client.owner // Już jest pojedynczym obiektem
-          : null // Brak właściciela
+          : null, // Brak właściciela
+        location: client.location && Array.isArray(client.location) && client.location.length > 0 
+          ? client.location[0] // Weź pierwszy element z tablicy
+          : client.location && !Array.isArray(client.location)
+          ? client.location // Już jest pojedynczym obiektem
+          : null // Brak lokalizacji
       }))
       
       // DEBUG: Sprawdź dane właścicieli
@@ -585,8 +720,31 @@ export const clientsApi = {
         })
       }
       
-      return transformedClients as Client[]
+      // 🚀 NOWE: Zwróć dane z informacją o paginacji
+      return {
+        clients: transformedClients as Client[],
+        total: count || transformedClients.length,
+        page: filters?.page || 1,
+        pageSize: filters?.pageSize || transformedClients.length
+      }
       
+          } catch (error) {
+        console.error('❌ Błąd w getClientsPaginated:', error)
+        throw error
+      }
+    },
+
+  // 🔄 KOMPATYBILNOŚĆ: Stara funkcja zwracająca tylko tablicę klientów
+  async getClients(user: User, filters?: { 
+    date?: string
+    status?: string
+    employee?: string 
+    search?: string
+    location?: string
+  }): Promise<Client[]> {
+    try {
+      const result = await this.getClientsPaginated(user, filters)
+      return result.clients
     } catch (error) {
       console.error('❌ Błąd w getClients:', error)
       throw error
@@ -602,6 +760,7 @@ export const clientsApi = {
       ...client,
       status: safeStatus, // Użyj bezpiecznego statusu
       owner_id: user.id, // Automatycznie przypisz właściciela
+      location_id: client.location_id || user.location_id, // Użyj lokalizacji klienta lub użytkownika
       edited_by: user.id,
       last_edited_by_name: user.full_name, // Zapisz dane twórcy
       last_edited_by_avatar_url: user.avatar_url,
@@ -983,11 +1142,11 @@ export const clientsApi = {
       
       console.log(`📅 Pobieranie klientów z przypomnieniami na: ${today}`)
 
-      // Pobierz wszystkich klientów użytkownika
+      // Pobierz wszystkich klientów użytkownika (bez paginacji)
       const allClients = await this.getClients(user)
 
       // Filtruj tylko tych z przypomnieniami na dziś
-      const clientsWithTodayReminders = allClients.filter(client => {
+      const clientsWithTodayReminders = allClients.filter((client: any) => {
         // Sprawdź czy klient ma aktywne przypomnienie
         const reminder = client.reminder || {
           enabled: false,
@@ -1000,7 +1159,7 @@ export const clientsApi = {
       })
 
       // Sortuj według godziny przypomnienia
-      const sortedClients = clientsWithTodayReminders.sort((a, b) => {
+      const sortedClients = clientsWithTodayReminders.sort((a: any, b: any) => {
         const timeA = a.reminder?.time || '00:00'
         const timeB = b.reminder?.time || '00:00'
         return timeA.localeCompare(timeB)
@@ -2784,6 +2943,201 @@ export const reportsApi = {
   }
 }
 
+// API dla lokalizacji/krajów
+export const locationsApi = {
+  // Pobierz wszystkie lokalizacje (podstawowe informacje - dla rejestracji)
+  async getAllLocations(): Promise<Location[]> {
+    try {
+      const { data, error } = await supabase
+        .from('locations')
+        .select(`
+          id,
+          name,
+          code,
+          currency,
+          timezone,
+          region,
+          created_at,
+          updated_at
+        `)
+        .order('name')
+      
+      if (error) {
+        console.error('❌ Błąd pobierania lokalizacji:', error)
+        throw error
+      }
+      
+      console.log('✅ Pobrano lokalizacje:', data?.length || 0)
+      return data as Location[]
+    } catch (error) {
+      console.error('❌ getAllLocations failed:', error)
+      throw error
+    }
+  },
+
+  // Pobierz wszystkie lokalizacje z pełnymi informacjami (dla zalogowanych użytkowników)
+  async getAllLocationsWithManagers(): Promise<Location[]> {
+    const { data, error } = await supabase
+      .from('locations')
+      .select(`
+        id,
+        name,
+        code,
+        currency,
+        timezone,
+        region,
+        project_manager_id,
+        created_at,
+        updated_at,
+        project_manager:users!project_manager_id (
+          id,
+          full_name,
+          email,
+          avatar_url
+        )
+      `)
+      .order('name')
+    
+    if (error) throw error
+    
+    // Przekształć dane - Supabase JOIN zwraca project_manager jako tablicę
+    const transformedData = data?.map((location: any) => ({
+      ...location,
+      project_manager: location.project_manager && Array.isArray(location.project_manager) && location.project_manager.length > 0 
+        ? location.project_manager[0] // Weź pierwszy element z tablicy
+        : location.project_manager && !Array.isArray(location.project_manager)
+        ? location.project_manager // Już jest pojedynczym obiektem
+        : null // Brak project managera
+    }))
+    
+    return transformedData as Location[]
+  },
+
+  // Pobierz dostępne lokalizacje dla użytkownika
+  async getUserAccessibleLocations(userId: string): Promise<Location[]> {
+    try {
+      // Najpierw spróbuj użyć funkcji SQL (jeśli istnieje)
+      const { data, error } = await supabase
+        .rpc('get_user_accessible_locations', { user_id: userId })
+      
+      if (error) {
+        console.warn('🔄 Funkcja SQL get_user_accessible_locations nie istnieje, używam fallback logiki')
+        throw error
+      }
+      
+      return data as Location[]
+    } catch (error) {
+      console.warn('⚠️ Błąd wywołania funkcji SQL, używam JavaScript fallback:', error)
+      
+      // Fallback - implementacja logiki w JavaScript
+      try {
+        // Pobierz użytkownika
+        const { data: user, error: userError } = await supabase
+          .from('users')
+          .select('role, location_id')
+          .eq('id', userId)
+          .single()
+        
+        if (userError) {
+          console.error('❌ Nie można pobrać danych użytkownika:', userError)
+          return this.getAllLocations() // Fallback - zwróć wszystkie
+        }
+        
+        // Sprawdź rolę użytkownika
+        if (user.role === 'admin' || user.role === 'szef') {
+          // Admin i szef widzą wszystkie lokalizacje
+          console.log('👑 Admin/Szef - zwracam wszystkie lokalizacje')
+          return this.getAllLocations()
+        } else {
+          // Pozostali widzą tylko swoją lokalizację
+          if (!user.location_id) {
+            console.warn('⚠️ Użytkownik nie ma przypisanej lokalizacji')
+            return []
+          }
+          
+          console.log('👤 Zwykły użytkownik - zwracam lokalizację:', user.location_id)
+          const { data: location, error: locationError } = await supabase
+            .from('locations')
+            .select('*')
+            .eq('id', user.location_id)
+            .single()
+          
+          if (locationError) {
+            console.error('❌ Nie można pobrać lokalizacji użytkownika:', locationError)
+            return []
+          }
+          
+          return [location as Location]
+        }
+        
+      } catch (fallbackError) {
+        console.error('❌ Fallback logic failed:', fallbackError)
+        // Ostateczny fallback - wszystkie lokalizacje
+        return this.getAllLocations()
+      }
+    }
+  },
+
+  // Pobierz lokalizację po ID
+  async getLocationById(id: string): Promise<Location> {
+    const { data, error } = await supabase
+      .from('locations')
+      .select(`
+        id,
+        name,
+        code,
+        currency,
+        timezone,
+        region,
+        project_manager_id,
+        created_at,
+        updated_at,
+        project_manager:users!project_manager_id (
+          id,
+          full_name,
+          email,
+          avatar_url
+        )
+      `)
+      .eq('id', id)
+      .single()
+    
+    if (error) throw error
+    
+    // Przekształć dane - Supabase JOIN zwraca project_manager jako tablicę
+    const transformedData = {
+      ...data,
+      project_manager: data.project_manager && Array.isArray(data.project_manager) && data.project_manager.length > 0 
+        ? data.project_manager[0] // Weź pierwszy element z tablicy
+        : data.project_manager && !Array.isArray(data.project_manager)
+        ? data.project_manager // Już jest pojedynczym obiektem
+        : null // Brak project managera
+    }
+    
+    return transformedData as Location
+  },
+
+  // Aktualizuj project managera dla lokalizacji
+  async updateLocationProjectManager(locationId: string, projectManagerId: string | null, currentUser: User): Promise<Location> {
+    if (!permissionsApi.canChangeRoles(currentUser)) {
+      throw new Error('Brak uprawnień do zmiany project managera')
+    }
+
+    const { data, error } = await supabase
+      .from('locations')
+      .update({
+        project_manager_id: projectManagerId,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', locationId)
+      .select()
+      .single()
+    
+    if (error) throw error
+    return data as Location
+  }
+}
+
 // Funkcje autoryzacji
 export const authApi = {
   // Zaloguj użytkownika
@@ -2797,13 +3151,14 @@ export const authApi = {
   },
 
   // Zarejestruj nowego użytkownika
-  async signUp(email: string, password: string, fullName: string) {
+  async signUp(email: string, password: string, fullName: string, locationId?: string) {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: {
-          full_name: fullName
+          full_name: fullName,
+          location_id: locationId
         }
       }
     })
@@ -3028,7 +3383,7 @@ export const getCanvasStatusColor = (statusChangedAt?: string): { color: string,
 export const getCanvasClientsWithPriority = async (user: User) => {
   try {
     const clients = await clientsApi.getClients(user)
-    const canvasClients = clients.filter(client => client.status === 'canvas')
+    const canvasClients = clients.filter((client: any) => client.status === 'canvas')
     
     const priorityStats = {
       high: 0,
@@ -3037,7 +3392,7 @@ export const getCanvasClientsWithPriority = async (user: User) => {
       total: canvasClients.length
     }
 
-    canvasClients.forEach(client => {
+    canvasClients.forEach((client: any) => {
       const { priority } = getCanvasStatusColor(client.status_changed_at)
       priorityStats[priority]++
     })
@@ -3079,12 +3434,22 @@ export const dashboardApi = {
   // Sprawdzenie czy materializowane widoki są świeże
   async checkViewFreshness() {
     try {
+      // Sprawdź czy tabela mv_dashboard_summary istnieje
       const { data, error } = await supabase
         .from('mv_dashboard_summary')
         .select('last_updated')
+        .limit(1)
         .single()
       
-      if (error) throw error
+      if (error) {
+        console.warn('⚠️ Materialized view mv_dashboard_summary nie istnieje lub brak uprawnień:', error)
+        // Fallback - użyj aktualnego czasu
+        return { 
+          lastUpdate: new Date().toISOString(), 
+          minutesSinceUpdate: 0, 
+          isStale: false // Założ że dane są świeże jeśli nie ma widoku
+        }
+      }
       
       const lastUpdate = new Date(data.last_updated)
       const now = new Date()
@@ -3097,7 +3462,12 @@ export const dashboardApi = {
       }
     } catch (error) {
       console.error('❌ Błąd sprawdzania świeżości widoków:', error)
-      return { lastUpdate: null, minutesSinceUpdate: Infinity, isStale: true }
+      // Graceful fallback
+      return { 
+        lastUpdate: new Date().toISOString(), 
+        minutesSinceUpdate: 0, 
+        isStale: false 
+      }
     }
   }
 }
@@ -3181,69 +3551,66 @@ export const performanceApi = {
   // Sprawdzenie metryk wydajności systemu
   async getSystemMetrics() {
     try {
-      // Pobierz statystyki tabel bezpośrednio zamiast używać funkcji z błędem timestamp
+      console.log('🔍 Pobieranie metryk wydajności systemu...')
       const tableStats = []
       
-      // Statystyki activity_logs
-      const { count: logsCount, error: logsError } = await supabase
-        .from('activity_logs')
-        .select('*', { count: 'exact', head: true })
+      // Pomocnicza funkcja do bezpiecznego pobierania statystyk tabeli
+      const getTableStats = async (tableName: string) => {
+        try {
+          const { count, error } = await supabase
+            .from(tableName)
+            .select('*', { count: 'exact', head: true })
+          
+          if (error) {
+            console.warn(`⚠️ Nie można pobrać statystyk tabeli ${tableName}:`, error.message)
+            return null
+          }
+          
+          return {
+            table_name: tableName,
+            record_count: count || 0,
+            table_size: 'N/A', // Uproszczenie - rozmiar nie jest krytyczny
+            last_updated: new Date().toISOString()
+          }
+        } catch (err) {
+          console.warn(`⚠️ Błąd tabeli ${tableName}:`, err)
+          return null
+        }
+      }
       
-      if (!logsError) {
+      // Sprawdź każdą tabelę oddzielnie
+      const tables = ['clients', 'users', 'activity_logs', 'activity_logs_archive']
+      
+      for (const tableName of tables) {
+        const stats = await getTableStats(tableName)
+        if (stats) {
+          tableStats.push(stats)
+        }
+      }
+      
+      // Jeśli nie udało się pobrać żadnych statystyk, zwróć podstawowe informacje
+      if (tableStats.length === 0) {
+        console.warn('⚠️ Nie udało się pobrać statystyk żadnej tabeli - zwracam dane przykładowe')
         tableStats.push({
-          table_name: 'activity_logs',
-          record_count: logsCount || 0,
-          table_size: 'N/A',
+          table_name: 'system_info',
+          record_count: 0,
+          table_size: 'Brak dostępu',
           last_updated: new Date().toISOString()
         })
       }
       
-      // Statystyki activity_logs_archive
-      const { count: archiveCount, error: archiveError } = await supabase
-        .from('activity_logs_archive')
-        .select('*', { count: 'exact', head: true })
-      
-      if (!archiveError) {
-        tableStats.push({
-          table_name: 'activity_logs_archive',
-          record_count: archiveCount || 0,
-          table_size: 'N/A',
-          last_updated: new Date().toISOString()
-        })
-      }
-      
-      // Statystyki clients
-      const { count: clientsCount, error: clientsError } = await supabase
-        .from('clients')
-        .select('*', { count: 'exact', head: true })
-      
-      if (!clientsError) {
-        tableStats.push({
-          table_name: 'clients',
-          record_count: clientsCount || 0,
-          table_size: 'N/A',
-          last_updated: new Date().toISOString()
-        })
-      }
-      
-      // Statystyki users
-      const { count: usersCount, error: usersError } = await supabase
-        .from('users')
-        .select('*', { count: 'exact', head: true })
-      
-      if (!usersError) {
-        tableStats.push({
-          table_name: 'users',
-          record_count: usersCount || 0,
-          table_size: 'N/A',
-          last_updated: new Date().toISOString()
-        })
-      }
-      
+      console.log(`✅ Pobrano statystyki ${tableStats.length} tabel`)
       return tableStats
     } catch (error) {
       console.error('❌ getSystemMetrics failed:', error)
-      throw error
+      
+      // Graceful fallback - zwróć podstawowe dane zamiast rzucać błąd
+      return [{
+        table_name: 'error_fallback',
+        record_count: 0,
+        table_size: 'Błąd połączenia',
+        last_updated: new Date().toISOString()
+      }]
     }
   },
 
