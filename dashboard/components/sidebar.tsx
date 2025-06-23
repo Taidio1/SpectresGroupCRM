@@ -14,6 +14,7 @@ import {
   User,
   FileText,
   Award,
+  Shield,
 } from "lucide-react"
 import { authApi } from "@/lib/supabase"
 import { useAuth } from "@/store/useStore"
@@ -40,6 +41,11 @@ const getNavigationItems = (userRole?: string) => {
     )
   }
 
+  // Admin Panel - tylko dla admin i szef
+  if (userRole && ['admin', 'szef'].includes(userRole)) {
+    baseItems.push({ icon: Shield, label: "Admin Panel", href: "/admin" })
+  }
+
   // Kalendarz - dla wszystkich
   baseItems.push({ icon: Calendar, label: "Kalendarz", href: "/calendar" })
 
@@ -48,14 +54,13 @@ const getNavigationItems = (userRole?: string) => {
 
 export function Sidebar() {
   const pathname = usePathname()
-  const { user, setUser, setAuthenticated } = useAuth()
+  const { user, clearStore } = useAuth()
   const { toast } = useToast()
 
   const handleLogout = async () => {
     try {
       await authApi.signOut()
-      setUser(null)
-      setAuthenticated(false)
+      clearStore() // Wyczyść cały store zamiast ręcznego ustawiania
       toast({
         title: "Wylogowano pomyślnie",
         description: "Do zobaczenia!",

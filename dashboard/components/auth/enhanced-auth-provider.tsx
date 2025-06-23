@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { useRouter, usePathname } from "next/navigation"
 import { authApi } from "@/lib/supabase"
 import { useAuth } from "@/store/useStore"
-import { useErrorLogger } from "@/hooks/useErrorLogger"
+import { logger } from "@/lib/logger"
 import { Loader2, AlertCircle, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -33,34 +33,35 @@ interface AuthProviderProps {
   children: React.ReactNode
 }
 
-// Konfiguracja timeoutów i limits
-const AUTH_TIMEOUT_MS = 30000 // 30 sekund na inicjalizację (zwiększone dla wolnych połączeń)
-const MAX_RETRY_ATTEMPTS = 3
-const LOADING_HANG_TIMEOUT_MS = 45000 // 45 sekund - po tym czasie uważamy że loading się zawiesił
+// Skrócone timeouty dla lepszego UX
+const AUTH_TIMEOUT_MS = 8000 // 8 sekund na inicjalizację
+const MAX_RETRY_ATTEMPTS = 2 // Mniej prób
+const LOADING_HANG_TIMEOUT_MS = 15000 // 15 sekund na wykrycie zawieszenia
 
 export function EnhancedAuthProvider({ children }: AuthProviderProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [retryCount, setRetryCount] = useState(0)
   const [sessionHanged, setSessionHanged] = useState(false)
+  const [isInitialized, setIsInitialized] = useState(false)
   
   const router = useRouter()
   const pathname = usePathname()
-  const { setUser, setAuthenticated } = useAuth()
-  const { logError, logInfo } = useErrorLogger()
+  const { user, isAuthenticated, setUser, setAuthenticated, clearStore } = useAuth()
   
   // Refs dla timeoutów
   const initTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const hangDetectionRef = useRef<NodeJS.Timeout | null>(null)
+  const isInitializingRef = useRef(false)
   
-  // Memoized values aby uniknąć re-renderów
+  // Memoized values
   const publicRoutes = ["/login", "/register"]
   const isPublicRoute = publicRoutes.includes(pathname)
 
   // Funkcja do czyszczenia sesji
   const clearSession = useCallback(async () => {
     try {
-      logInfo("Clearing corrupted session", { 
+      logger.loading("Clearing corrupted session", { 
         component: 'enhanced-auth-provider',
         pathname,
         retryCount
@@ -69,31 +70,24 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
       // Wyloguj z Supabase
       await authApi.signOut()
       
-      // Wyczyść localStorage
-      localStorage.clear()
+      // Wyczyść localStorage i store
+      clearStore()
       
-      // Wyczyść sessionStorage  
-      sessionStorage.clear()
-      
-      // Wyczyść state aplikacji
-      setUser(null)
-      setAuthenticated(false)
-      
-      logInfo("Session cleared successfully", { 
+      logger.success("Session cleared successfully", { 
         component: 'enhanced-auth-provider',
         pathname
       })
     } catch (clearError) {
-      logError("Error clearing session", clearError, { 
+      logger.error("Error clearing session", clearError, { 
         component: 'enhanced-auth-provider',
         pathname
       })
     }
-  }, [setUser, setAuthenticated, logError, logInfo, pathname, retryCount])
+  }, [clearStore, pathname, retryCount])
 
   // Funkcja do wykrywania i resetowania zawieszenia
   const handleSessionHang = useCallback(async () => {
-    logError("Session hang detected - initiating emergency reset", new Error("Session hang timeout"), {
+    logger.error("Session hang detected - initiating emergency reset", new Error("Session hang timeout"), {
       component: 'enhanced-auth-provider',
       pathname,
       retryCount,
@@ -107,16 +101,14 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
     setTimeout(() => {
       router.push("/login?error=session_reset")
     }, 2000)
-  }, [clearSession, router, logError, logInfo, pathname, retryCount])
+  }, [clearSession, router, pathname, retryCount])
 
   // Funkcja inicjalizacji autoryzacji z timeoutem
   const initAuthWithTimeout = useCallback(async (): Promise<void> => {
     return new Promise((resolve, reject) => {
-      // AbortController do anulowania operacji
       const abortController = new AbortController()
       let isCompleted = false
       
-      // Timeout dla całej operacji
       const timeoutId = setTimeout(() => {
         if (!isCompleted) {
           abortController.abort()
@@ -126,42 +118,67 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
 
       const performAuth = async () => {
         try {
-          logInfo(`Auth init attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS}`, {
+          // Jeśli mamy już dane użytkownika w store z localStorage, użyj ich
+          if (user && isAuthenticated) {
+            logger.info("User data found in persisted store, verifying session", {
+              component: 'enhanced-auth-provider',
+              userId: user.id,
+              userEmail: user.email
+            })
+            
+            // Sprawdź czy sesja w Supabase jest nadal ważna
+            const session = await authApi.getSession()
+            
+            if (session?.user && session.user.id === user.id) {
+              logger.success("Persisted session is valid", {
+                component: 'enhanced-auth-provider',
+                userId: user.id
+              })
+              
+              // Sesja jest ważna, nie potrzeba ponownej autoryzacji
+              if (isPublicRoute) {
+                router.push("/")
+              }
+              isCompleted = true
+              clearTimeout(timeoutId)
+              resolve()
+              return
+            } else {
+              logger.info("Persisted session is invalid, clearing and re-authenticating", {
+                component: 'enhanced-auth-provider',
+                userId: user.id
+              })
+              clearStore()
+            }
+          }
+          
+          logger.info(`Auth init attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS}`, {
             component: 'enhanced-auth-provider',
             pathname,
             retryCount,
             action: 'auth_init_attempt'
           })
           
-          // Sprawdź czy operacja została anulowana
           if (abortController.signal.aborted) {
             throw new Error("Operation was cancelled")
           }
           
-          // Sprawdź czy jest aktywna sesja
-          logInfo("Checking session...", { 
-            component: 'enhanced-auth-provider',
-            pathname 
-          })
-          
+          // Sprawdź sesję w Supabase
           const session = await authApi.getSession()
           
-          // Sprawdź czy operacja została anulowana po getSession
           if (abortController.signal.aborted) {
             throw new Error("Operation was cancelled")
           }
           
           if (session?.user) {
-            logInfo("Session found, fetching user profile", { 
+            logger.info("Session found, fetching user profile", { 
               component: 'enhanced-auth-provider',
               pathname,
               userId: session.user.id 
             })
             
-            // Pobierz profil użytkownika
             const userProfile = await authApi.getUserProfile(session.user.id)
             
-            // Sprawdź czy operacja została anulowana po getUserProfile
             if (abortController.signal.aborted) {
               throw new Error("Operation was cancelled")
             }
@@ -169,28 +186,25 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
             setUser(userProfile)
             setAuthenticated(true)
             
-            logInfo("Authentication successful", { 
+            logger.success("Authentication successful", { 
               component: 'enhanced-auth-provider',
               pathname,
               userProfile: userProfile.email 
             })
             
-            // Jeśli użytkownik jest na stronie logowania/rejestracji, przekieruj do dashboard
             if (isPublicRoute) {
               router.push("/")
             }
           } else {
-            logInfo("No session found, redirecting to login", {
+            logger.info("No session found", {
               component: 'enhanced-auth-provider',
               pathname,
-              action: 'redirect_to_login'
+              action: 'no_session'
             })
             
-            // Brak sesji - wyloguj użytkownika
             setUser(null)
             setAuthenticated(false)
             
-            // Jeśli nie jest na publicznej stronie, przekieruj do logowania
             if (!isPublicRoute) {
               router.push("/login")
             }
@@ -204,7 +218,6 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
           isCompleted = true
           clearTimeout(timeoutId)
           
-          // Lepsze komunikaty błędów
           if (authError.message === "Operation was cancelled") {
             reject(new Error("Operacja anulowana z powodu timeoutu"))
           } else if (authError.message?.includes("Failed to fetch") || authError.message?.includes("fetch")) {
@@ -219,10 +232,20 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
 
       performAuth()
     })
-  }, [retryCount, setUser, setAuthenticated, isPublicRoute, router, logError, logInfo])
+  }, [retryCount, setUser, setAuthenticated, isPublicRoute, router, user, isAuthenticated, clearStore])
 
   // Główna funkcja inicjalizacji
   const initAuth = useCallback(async () => {
+    // Zapobiegaj równoczesnym inicjalizacjom
+    if (isInitializingRef.current) {
+      logger.info("Auth initialization already in progress, skipping", {
+        component: 'enhanced-auth-provider'
+      })
+      return
+    }
+    
+    isInitializingRef.current = true
+    
     // Wyczyść poprzednie timeouty
     if (initTimeoutRef.current) {
       clearTimeout(initTimeoutRef.current)
@@ -241,10 +264,11 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
 
     try {
       await initAuthWithTimeout()
-      setRetryCount(0) // Reset retry count on success
+      setRetryCount(0)
+      setIsInitialized(true)
       
     } catch (authError) {
-      logError("Authentication failed", authError, {
+      logger.error("Authentication failed", authError, {
         component: 'enhanced-auth-provider',
         pathname,
         retryCount,
@@ -252,9 +276,8 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
       })
       
       if (retryCount < MAX_RETRY_ATTEMPTS - 1) {
-        // Retry with exponential backoff
         const delay = Math.pow(2, retryCount) * 1000
-        logInfo(`Retrying in ${delay}ms...`, {
+        logger.info(`Retrying in ${delay}ms...`, {
           component: 'enhanced-auth-provider',
           pathname,
           retryCount,
@@ -265,10 +288,9 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
         setTimeout(() => {
           setRetryCount(prev => prev + 1)
         }, delay)
-        return // Don't set loading to false, let retry handle it
+        return
       } else {
-        // Max retries reached
-        logInfo("Max retry attempts reached, clearing session", {
+        logger.info("Max retry attempts reached, clearing session", {
           component: 'enhanced-auth-provider',
           pathname,
           retryCount,
@@ -283,27 +305,29 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
         }
       }
     } finally {
-      // Wyczyść timeout wykrywania zawieszenia
       if (hangDetectionRef.current) {
         clearTimeout(hangDetectionRef.current)
         hangDetectionRef.current = null
       }
       setLoading(false)
+      isInitializingRef.current = false
     }
-  }, [retryCount, initAuthWithTimeout, handleSessionHang, clearSession, isPublicRoute, router, logError, logInfo])
+  }, [retryCount, initAuthWithTimeout, handleSessionHang, clearSession, isPublicRoute, router])
 
   // Funkcja retry dla UI
   const retryAuth = useCallback(() => {
     setRetryCount(0)
     setSessionHanged(false)
+    setIsInitialized(false)
     initAuth()
   }, [initAuth])
 
-  // useEffect z poprawionymi dependencies
+  // Główny useEffect - uruchamia się TYLKO raz przy mount
   useEffect(() => {
-    initAuth()
+    if (!isInitialized) {
+      initAuth()
+    }
 
-    // Cleanup function
     return () => {
       if (initTimeoutRef.current) {
         clearTimeout(initTimeoutRef.current)
@@ -314,15 +338,17 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
         hangDetectionRef.current = null
       }
     }
-  }, [pathname]) // Tylko pathname jako dependency!
+  }, []) // BRAK dependencies - tylko mount/unmount!
 
-  // Nasłuchuj zmian w autoryzacji (tylko raz)
+  // Osobny useEffect dla nasłuchiwania zmian autoryzacji
   useEffect(() => {
+    // Nasłuchuj tylko jeśli już zainicjalizowane
+    if (!isInitialized) return
+
     const { data: { subscription } } = authApi.onAuthStateChange(
       async (event, session) => {
-        logInfo(`Auth state changed: ${event}`, {
+        logger.info(`Auth state changed: ${event}`, {
           component: 'enhanced-auth-provider',
-          pathname,
           event,
           action: 'auth_state_change'
         })
@@ -332,19 +358,21 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
             const userProfile = await authApi.getUserProfile(session.user.id)
             setUser(userProfile)
             setAuthenticated(true)
-            router.push("/")
+            if (isPublicRoute) {
+              router.push("/")
+            }
           } catch (error) {
-            logError("Error handling SIGNED_IN event", error, {
+            logger.error("Error handling SIGNED_IN event", error, {
               component: 'enhanced-auth-provider',
-              pathname,
               event,
               userId: session?.user?.id
             })
           }
         } else if (event === "SIGNED_OUT") {
-          setUser(null)
-          setAuthenticated(false)
-          router.push("/login")
+          clearStore()
+          if (!isPublicRoute) {
+            router.push("/login")
+          }
         }
       }
     )
@@ -352,7 +380,7 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
     return () => {
       subscription?.unsubscribe()
     }
-  }, [setUser, setAuthenticated, router, logError, logInfo, pathname])
+  }, [isInitialized, setUser, setAuthenticated, clearStore, router, isPublicRoute])
 
   // Renderowanie stanów błędów i ładowania
   if (sessionHanged) {
@@ -377,7 +405,7 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
         <div className="text-center max-w-md w-full">
           <Loader2 className="h-8 w-8 animate-spin text-cyan-400 mx-auto mb-4" />
-          <p className="text-slate-400 mb-2">Ładowanie...</p>
+          <p className="text-slate-400 mb-2">Sprawdzanie autoryzacji...</p>
           
           {retryCount > 0 && (
             <p className="text-sm text-orange-400">
@@ -398,7 +426,6 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
     )
   }
 
-  // Show error state with retry option
   if (error && !loading) {
     const isTimeoutError = error.includes("timeout") || error.includes("Timeout") || error.includes("anulowana")
     const isConnectionError = error.includes("połączenia") || error.includes("internet")
@@ -417,20 +444,9 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
               <h3 className="text-orange-400 font-medium mb-2">💡 Co możesz zrobić:</h3>
               <ul className="text-orange-300 text-sm space-y-1">
                 <li>• Sprawdź połączenie internetowe</li>
-                <li>• Poczekaj chwilę i spróbuj ponownie</li>
+                <li>• Spróbuj ponownie (automatycznie)</li>
                 <li>• Restart przeglądarki może pomóc</li>
                 <li>• Wyczyść cache przeglądarki</li>
-              </ul>
-            </div>
-          )}
-          
-          {isConnectionError && (
-            <div className="bg-blue-900/20 border border-blue-500/30 rounded-lg p-4 mb-6 text-left">
-              <h3 className="text-blue-400 font-medium mb-2">🌐 Problem z połączeniem:</h3>
-              <ul className="text-blue-300 text-sm space-y-1">
-                <li>• Sprawdź stabilność sieci</li>
-                <li>• Spróbuj odświeżyć stronę</li>
-                <li>• Sprawdź czy inne strony działają</li>
               </ul>
             </div>
           )}
@@ -440,7 +456,7 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
             className="bg-cyan-600 hover:bg-cyan-700 w-full mb-4"
           >
             <RefreshCw className="h-4 w-4 mr-2" />
-            Spróbuj ponownie ({MAX_RETRY_ATTEMPTS - retryCount} prób pozostało)
+            Spróbuj ponownie
           </Button>
           
           <Button 
@@ -452,7 +468,7 @@ export function EnhancedAuthProvider({ children }: AuthProviderProps) {
           </Button>
           
           <div className="mt-4 text-xs text-slate-500">
-            Timeout: {AUTH_TIMEOUT_MS / 1000}s | Próba: {retryCount + 1}/{MAX_RETRY_ATTEMPTS}
+            Timeout: {AUTH_TIMEOUT_MS / 1000}s | Wersja z persistence
           </div>
         </div>
       </div>

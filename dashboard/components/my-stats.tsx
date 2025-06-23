@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input"
 import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis } from "recharts"
 import { useAuth } from "@/store/useStore"
 import { reportsApi } from "@/lib/supabase"
+import { logger } from "@/lib/logger"
 import { useToast } from "@/hooks/use-toast"
 
 interface PersonalStats {
@@ -58,7 +59,7 @@ export function MyStatsPage() {
   // Sprawdź uprawnienia - tylko pracownicy
   useEffect(() => {
     if (user && user.role !== 'pracownik') {
-      console.warn('🚫 Dostęp zabroniony - tylko dla pracowników')
+      logger.warn('Dostęp zabroniony - tylko dla pracowników', { component: 'my-stats', userRole: user.role })
       router.push('/')
       return
     }
@@ -72,23 +73,12 @@ export function MyStatsPage() {
       setLoading(true)
       setError(null)
       try {
-        console.log('📊 Ładowanie osobistych statystyk...')
+        logger.loading('Ładowanie osobistych statystyk', { component: 'my-stats' })
         const personalStats = await reportsApi.getMyPersonalStats(user)
         setStats(personalStats)
-        console.log('✅ Statystyki załadowane:', personalStats)
+        logger.success('Statystyki załadowane', { component: 'my-stats', stats: personalStats })
       } catch (err) {
-        console.error('❌ Błąd ładowania statystyk:', err)
-        
-        // Szczegółowe logowanie błędów
-        if (err && typeof err === 'object') {
-          console.error('📋 Szczegóły błędu w komponencie:', {
-            message: (err as any).message,
-            name: (err as any).name,
-            code: (err as any).code,
-            status: (err as any).status,
-            response: (err as any).response
-          })
-        }
+        logger.error('Błąd ładowania statystyk', err, { component: 'my-stats' })
         
         let errorMessage = 'Błąd ładowania danych'
         if (err instanceof Error) {
@@ -118,14 +108,14 @@ export function MyStatsPage() {
       const year = 2025
       const month = 6 // czerwiec
       
-      console.log('⏰ Ładowanie godzin pracy dla czerwca 2025...')
+      logger.loading('Ładowanie godzin pracy dla czerwca 2025', { component: 'my-stats' })
       const hours = await reportsApi.getWorkingHoursForMonth(user, year, month)
       setWorkingHours(hours)
       setIsUsingLocalStorage(false) // Tabela working_hours już istnieje w bazie
       
-      console.log('✅ Godziny pracy załadowane z bazy danych dla czerwca 2025:', hours)
+      logger.success('Godziny pracy załadowane z bazy danych', { component: 'my-stats', count: Object.keys(hours).length })
     } catch (err) {
-      console.error('❌ Błąd ładowania godzin pracy:', err)
+      logger.error('Błąd ładowania godzin pracy', err, { component: 'my-stats' })
       // Tylko w przypadku błędu może być używany localStorage fallback
       setIsUsingLocalStorage(err && typeof err === 'object' && (err as any).message?.includes('localStorage'))
     }
@@ -202,7 +192,7 @@ export function MyStatsPage() {
         description: `Zapisano ${hours}h dla ${new Date(dateString).toLocaleDateString('pl-PL')} w bazie danych`,
       })
     } catch (err) {
-      console.error('❌ Błąd zapisywania godzin:', err)
+      logger.error('Błąd zapisywania godzin', err, { component: 'my-stats', dateString, hours: tempHours })
       toast({
         title: "Błąd",
         description: err instanceof Error ? err.message : "Nie udało się zapisać godzin",

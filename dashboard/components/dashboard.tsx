@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense, lazy } from "react"
 import {
   BarChart3,
   Bell,
@@ -34,6 +34,7 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, PieChart, Pie, Cell
 import Link from "next/link"
 import { useAuth } from "@/store/useStore"
 import { clientsApi, getCanvasStatusColor, DailyScheduleSlot, authApi, User, reportsApi, EmployeeStats } from "@/lib/supabase"
+import { logger } from "@/lib/logger"
 
 // Ostatnie aktywności
 const recentActivities = [
@@ -124,7 +125,7 @@ export function Dashboard() {
       updateCanvasStats(filteredClients)
       
     } catch (error) {
-      console.error('❌ Błąd ładowania statystyk:', error)
+      logger.error('Błąd ładowania statystyk', error, { component: 'dashboard' })
     } finally {
       setLoading(false)
     }
@@ -136,12 +137,12 @@ export function Dashboard() {
     
     setScheduleLoading(true)
     try {
-      console.log('📅 Ładowanie planu dnia z rzeczywistymi klientami...')
+      logger.loading('Ładowanie planu dnia z rzeczywistymi klientami', { component: 'dashboard' })
       const schedule = await clientsApi.getDailyScheduleWithClients(user)
       setDailySchedule(schedule)
-      console.log('✅ Plan dnia załadowany:', schedule)
+      logger.success('Plan dnia załadowany', { component: 'dashboard', count: schedule.length })
     } catch (error) {
-      console.error('❌ Błąd ładowania planu dnia:', error)
+      logger.error('Błąd ładowania planu dnia', error, { component: 'dashboard' })
       // W przypadku błędu ustaw pusty schedule
       setDailySchedule([])
     } finally {
@@ -168,7 +169,7 @@ export function Dashboard() {
     
     setTopEmployeesLoading(true)
     try {
-      console.log('🏆 Ładowanie najlepszych pracowników - dane z tabeli employee_stats...')
+      logger.loading('Ładowanie najlepszych pracowników', { component: 'dashboard' })
       
       // Pobierz statystyki pracowników z tabeli employee_stats
       const employeeStats = await reportsApi.getEmployeeStats(user)
@@ -191,11 +192,11 @@ export function Dashboard() {
         }))
         .slice(0, 4) // Top 4
       
-      console.log('✅ Top pracownicy załadowani (custom_clients_count z employee_stats):', topEmployeesData)
+      logger.success('Top pracownicy załadowani', { component: 'dashboard', count: topEmployeesData.length })
       setTopEmployees(topEmployeesData)
       
     } catch (error) {
-      console.error('❌ Błąd ładowania top pracowników:', error)
+      logger.error('Błąd ładowania top pracowników', error, { component: 'dashboard' })
     } finally {
       setTopEmployeesLoading(false)
     }
@@ -207,12 +208,12 @@ export function Dashboard() {
     
     setSalesTrendsLoading(true)
     try {
-      console.log('📈 Ładowanie trendów sprzedażowych...')
+      logger.loading('Ładowanie trendów sprzedażowych', { component: 'dashboard' })
       const trends = await reportsApi.getSalesTrends(user)
       setSalesTrends(trends)
-      console.log('✅ Trendy sprzedażowe załadowane:', trends)
+      logger.success('Trendy sprzedażowe załadowane', { component: 'dashboard', count: trends.length })
     } catch (error) {
-      console.error('❌ Błąd ładowania trendów sprzedażowych:', error)
+      logger.error('Błąd ładowania trendów sprzedażowych', error, { component: 'dashboard' })
       // W przypadku błędu ustaw puste dane
       setSalesTrends([])
     } finally {
@@ -233,7 +234,14 @@ export function Dashboard() {
   const today = new Date().toLocaleDateString('pl-PL')
 
   return (
-    <div className="grid grid-cols-12 gap-6">
+    <Suspense fallback={
+      <div className="grid grid-cols-12 gap-6">
+        <div className="col-span-12 flex items-center justify-center py-8">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400"></div>
+        </div>
+      </div>
+    }>
+      <div className="grid grid-cols-12 gap-6">
           {/* Sekcja zależna od roli - Kalendarz dla pracowników, Statystyki zespołowe dla zarządzających */}
           {user?.role === 'pracownik' ? (
             // Plan dnia - Kalendarz z slotami (tylko dla pracowników)
@@ -772,5 +780,6 @@ export function Dashboard() {
             </CardContent>
           </Card>
     </div>
+    </Suspense>
   )
 } 

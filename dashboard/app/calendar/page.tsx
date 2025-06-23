@@ -33,6 +33,7 @@ import { useToast } from "@/hooks/use-toast"
 import { useAuth } from "@/store/useStore"
 import { clientsApi, permissionsApi, authApi, ClientWithReminder } from "@/lib/supabase"
 import { ProtectedLayout } from "@/components/auth/protected-layout"
+import { logger } from "@/lib/logger"
 
 interface CalendarReminder {
   id: string
@@ -89,7 +90,7 @@ function CalendarContent() {
       setLoading(true)
       const dateStr = targetDate ? formatDateForAPI(targetDate) : formatDateForAPI(selectedDate)
       
-      console.log(`📅 Ładowanie przypomnień na: ${dateStr}`)
+      logger.loading(`Ładowanie przypomnień na: ${dateStr}`, { component: 'calendar' })
       
       // Pobierz klientów z przypomnieniami
       const clientsWithReminders = await clientsApi.getClientsWithReminders(user, dateStr)
@@ -109,7 +110,7 @@ function CalendarContent() {
         }))
         .sort((a, b) => a.time.localeCompare(b.time))
 
-      console.log(`✅ Załadowano ${calendarReminders.length} przypomnień`)
+      logger.success(`Załadowano przypomnienia`, { component: 'calendar', count: calendarReminders.length, date: dateStr })
       
       setReminders(calendarReminders)
       
@@ -119,7 +120,7 @@ function CalendarContent() {
       }
       
     } catch (error) {
-      console.error('❌ Błąd ładowania przypomnień:', error)
+      logger.error('Błąd ładowania przypomnień', error, { component: 'calendar' })
       toast({
         title: "Błąd",
         description: "Nie udało się załadować przypomnień",
@@ -166,7 +167,7 @@ function CalendarContent() {
       setEmployeeFilters(employeeFiltersData)
       
     } catch (error) {
-      console.error('❌ Błąd przygotowywania filtrów pracowników:', error)
+      logger.error('Błąd przygotowywania filtrów pracowników', error, { component: 'calendar' })
     }
   }
 

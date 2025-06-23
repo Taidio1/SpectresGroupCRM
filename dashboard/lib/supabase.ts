@@ -370,13 +370,20 @@ export interface User {
   id: string
   email: string
   full_name: string
-  role: 'admin' | 'manager' | 'pracownik' | 'szef'
+  role: 'admin' | 'manager' | 'pracownik' | 'szef' | 'project_manager' | 'junior_manager'
   phone?: string 
   bio?: string 
   avatar_url?: string 
-  language?: 'pl' | 'en' | 'sk' 
+  language?: 'pl' | 'en' | 'sk'
   created_at: string
   updated_at: string
+  // Nowe pola hierarchiczne z migracji
+  location_id?: string
+  manager_id?: string
+  role_hierarchy_level?: number
+  territory?: string
+  start_date?: string
+  is_active?: boolean
 }
 
 // Interfejs dla historii zmian z dodatkowymi informacjami
@@ -416,6 +423,8 @@ export const permissionsApi = {
                client.owner_id === null || 
                client.edited_by === user.id
       case 'manager':
+      case 'project_manager':
+      case 'junior_manager':
       case 'szef':
       case 'admin':
         return true
@@ -426,7 +435,7 @@ export const permissionsApi = {
 
   // Sprawdź czy użytkownik może przypisywać klientów
   canAssignClients: (user: User): boolean => {
-    return ['manager', 'szef', 'admin'].includes(user.role)
+    return ['manager', 'project_manager', 'junior_manager', 'szef', 'admin'].includes(user.role)
   },
 
   // Sprawdź czy użytkownik może zmieniać role innych użytkowników
@@ -436,7 +445,7 @@ export const permissionsApi = {
 
   // Sprawdź czy użytkownik może dostęp do zaawansowanych raportów
   canAccessAdvancedReports: (user: User): boolean => {
-    return ['manager', 'szef', 'admin'].includes(user.role)
+    return ['manager', 'project_manager', 'junior_manager', 'szef', 'admin'].includes(user.role)
   }
 }
 
@@ -492,16 +501,34 @@ export const clientsApi = {
       console.log('🔄 Rozpoczynam pobieranie klientów dla użytkownika:', user.id, user.role)
       
       // Użyj JOIN aby pobrać klientów z danymi właścicieli w jednym zapytaniu
+      // 🚀 OPTYMALIZACJA: Wybierz tylko niezbędne pola
       let query = supabase
         .from('clients')
         .select(`
-          *,
+          id,
+          first_name,
+          last_name,
+          company_name,
+          nip,
+          phone,
+          email,
+          website,
+          status,
+          notes,
+          owner_id,
+          edited_by,
+          edited_at,
+          created_at,
+          updated_at,
+          status_changed_at,
+          last_phone_click,
+          last_edited_by_name,
+          last_edited_by_avatar_url,
           owner:users!owner_id (
             id,
             full_name,
             email,
-            avatar_url,
-            role
+            avatar_url
           )
         `)
         .order('updated_at', { ascending: false })
@@ -527,16 +554,25 @@ export const clientsApi = {
         throw error
       }
       
-      console.log('✅ Pobrano klientów z JOIN:', clients?.length || 0)
       
       if (!clients || clients.length === 0) {
         console.log('ℹ️ Brak klientów w bazie danych')
         return []
       }
       
+      // Przekształć dane - Supabase JOIN zwraca owner jako tablicę, ale potrzebujemy pojedynczego obiektu
+      const transformedClients = clients.map((client: any) => ({
+        ...client,
+        owner: client.owner && Array.isArray(client.owner) && client.owner.length > 0 
+          ? client.owner[0] // Weź pierwszy element z tablicy
+          : client.owner && !Array.isArray(client.owner)
+          ? client.owner // Już jest pojedynczym obiektem
+          : null // Brak właściciela
+      }))
+      
       // DEBUG: Sprawdź dane właścicieli
-      const clientsWithOwners = clients.filter(client => client.owner)
-      const clientsWithoutOwners = clients.filter(client => !client.owner)
+      const clientsWithOwners = transformedClients.filter(client => client.owner)
+      const clientsWithoutOwners = transformedClients.filter(client => !client.owner)
       console.log('✅ Klienci z właścicielami:', clientsWithOwners.length)
       console.log('❌ Klienci bez właścicieli:', clientsWithoutOwners.length)
       
@@ -549,8 +585,7 @@ export const clientsApi = {
         })
       }
       
-      console.log('✅ Zwracam', clients.length, 'klientów z informacjami o właścicielach')
-      return clients as Client[]
+      return transformedClients as Client[]
       
     } catch (error) {
       console.error('❌ Błąd w getClients:', error)
@@ -1592,10 +1627,10 @@ export const reportsApi = {
     return data
   },
 
-  // Aktualizuj statystyki pracownika (dla manager/szef/admin)
+  // Aktualizuj statystyki pracownika (dla manager/project_manager/junior_manager/szef/admin)
   async updateEmployeeStats(userId: string, updates: Partial<EmployeeStats>, currentUser: User) {
     // Sprawdź uprawnienia
-    if (!['manager', 'szef', 'admin'].includes(currentUser.role)) {
+    if (!['manager', 'project_manager', 'junior_manager', 'szef', 'admin'].includes(currentUser.role)) {
       throw new Error('Brak uprawnień do modyfikacji statystyk')
     }
 
@@ -1610,10 +1645,10 @@ export const reportsApi = {
     return data
   },
 
-  // Edytuj ilość klientów i sumę wpłat pracownika (dla manager/szef/admin)
+  // Edytuj ilość klientów i sumę wpłat pracownika (dla manager/project_manager/junior_manager/szef/admin)
   async updateEmployeeClientStats(userId: string, clientsCount: number, totalPayments: number, currentUser: User) {
     // Sprawdź uprawnienia
-    if (!['manager', 'szef', 'admin'].includes(currentUser.role)) {
+    if (!['manager', 'project_manager', 'junior_manager', 'szef', 'admin'].includes(currentUser.role)) {
       throw new Error('Brak uprawnień do modyfikacji statystyk')
     }
 
@@ -1743,7 +1778,7 @@ export const reportsApi = {
   // Stwórz statystyki dla nowego pracownika
   async createEmployeeStats(userId: string, currentUser: User) {
     // Sprawdź uprawnienia
-    if (!['manager', 'szef', 'admin'].includes(currentUser.role)) {
+    if (!['manager', 'project_manager', 'junior_manager', 'szef', 'admin'].includes(currentUser.role)) {
       throw new Error('Brak uprawnień do tworzenia statystyk')
     }
 
@@ -1878,7 +1913,7 @@ export const reportsApi = {
       console.log('📊 Pobieranie statystyk aktywności pracowników...')
       
       // Sprawdź uprawnienia
-      if (!user || !['manager', 'szef', 'admin'].includes(user.role)) {
+      if (!user || !['manager', 'project_manager', 'junior_manager', 'szef', 'admin'].includes(user.role)) {
         console.warn('⚠️ Brak uprawnień do podglądu statystyk aktywności')
         return []
       }
@@ -3078,7 +3113,7 @@ export const teamApi = {
       const { data, error } = await supabase
         .from('mv_activity_summary')
         .select('*')
-        .in('role', ['pracownik', 'manager', 'szef'])
+        .in('role', ['pracownik', 'manager', 'project_manager', 'junior_manager', 'szef'])
         .order('activities_24h', { ascending: false })
       
       if (error) {
@@ -3118,7 +3153,7 @@ export const teamApi = {
       const { data, error } = await supabase
         .from('mv_activity_summary')
         .select('activities_24h, activities_7d, phone_clicks, status_changes')
-        .in('role', ['pracownik', 'manager', 'szef'])
+        .in('role', ['pracownik', 'manager', 'project_manager', 'junior_manager', 'szef'])
       
       if (error) throw error
       
@@ -3146,11 +3181,66 @@ export const performanceApi = {
   // Sprawdzenie metryk wydajności systemu
   async getSystemMetrics() {
     try {
-      const { data, error } = await supabase.rpc('get_activity_logs_stats')
+      // Pobierz statystyki tabel bezpośrednio zamiast używać funkcji z błędem timestamp
+      const tableStats = []
       
-      if (error) throw error
+      // Statystyki activity_logs
+      const { count: logsCount, error: logsError } = await supabase
+        .from('activity_logs')
+        .select('*', { count: 'exact', head: true })
       
-      return data
+      if (!logsError) {
+        tableStats.push({
+          table_name: 'activity_logs',
+          record_count: logsCount || 0,
+          table_size: 'N/A',
+          last_updated: new Date().toISOString()
+        })
+      }
+      
+      // Statystyki activity_logs_archive
+      const { count: archiveCount, error: archiveError } = await supabase
+        .from('activity_logs_archive')
+        .select('*', { count: 'exact', head: true })
+      
+      if (!archiveError) {
+        tableStats.push({
+          table_name: 'activity_logs_archive',
+          record_count: archiveCount || 0,
+          table_size: 'N/A',
+          last_updated: new Date().toISOString()
+        })
+      }
+      
+      // Statystyki clients
+      const { count: clientsCount, error: clientsError } = await supabase
+        .from('clients')
+        .select('*', { count: 'exact', head: true })
+      
+      if (!clientsError) {
+        tableStats.push({
+          table_name: 'clients',
+          record_count: clientsCount || 0,
+          table_size: 'N/A',
+          last_updated: new Date().toISOString()
+        })
+      }
+      
+      // Statystyki users
+      const { count: usersCount, error: usersError } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+      
+      if (!usersError) {
+        tableStats.push({
+          table_name: 'users',
+          record_count: usersCount || 0,
+          table_size: 'N/A',
+          last_updated: new Date().toISOString()
+        })
+      }
+      
+      return tableStats
     } catch (error) {
       console.error('❌ getSystemMetrics failed:', error)
       throw error

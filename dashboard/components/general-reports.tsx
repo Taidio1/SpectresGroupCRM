@@ -24,6 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, PieChart as RechartsPieChart, Pie, Cell, LineChart, Line } from "recharts"
 import { reportsApi } from "@/lib/supabase"
 import { useAuth } from "@/store/useStore"
+import { logger } from "@/lib/logger"
 
 // Dane ogólnych statystyk
 const overallStats = {
@@ -89,12 +90,12 @@ export function GeneralReports() {
     
     setPhoneClicksLoading(true)
     try {
-      console.log('📞 Ładowanie statystyk kliknięć telefonu...')
+      logger.loading('Ładowanie statystyk kliknięć telefonu', { component: 'general-reports' })
       const stats = await reportsApi.getPhoneClicksStats(user)
       setPhoneClicksStats(stats)
-      console.log('✅ Załadowano statystyki kliknięć telefonu:', stats)
+      logger.success('Załadowano statystyki kliknięć telefonu', { component: 'general-reports', stats })
     } catch (error) {
-      console.error('❌ Błąd ładowania statystyk kliknięć telefonu:', error)
+      logger.error('Błąd ładowania statystyk kliknięć telefonu', error, { component: 'general-reports' })
       // W przypadku błędu pozostaw zerowe wartości
     } finally {
       setPhoneClicksLoading(false)
@@ -107,12 +108,12 @@ export function GeneralReports() {
     
     setTrendsLoading(true)
     try {
-      console.log('📊 Ładowanie trendów wydajności zespołu...')
+      logger.loading('Ładowanie trendów wydajności zespołu', { component: 'general-reports' })
       const trends = await reportsApi.getTeamPerformanceTrends(user)
       setTeamPerformanceTrends(trends)
-      console.log('✅ Załadowano trendy wydajności zespołu:', trends)
+      logger.success('Załadowano trendy wydajności zespołu', { component: 'general-reports', count: trends.length })
     } catch (error) {
-      console.error('❌ Błąd ładowania trendów wydajności zespołu:', error)
+      logger.error('Błąd ładowania trendów wydajności zespołu', error, { component: 'general-reports' })
       // W przypadku błędu pozostaw puste dane
       setTeamPerformanceTrends([])
     } finally {
@@ -125,12 +126,12 @@ export function GeneralReports() {
     const loadDatabaseUtilization = async () => {
       try {
         setLoading(true)
-        console.log('📊 Ładowanie statystyk wykorzystania bazy...')
+        logger.loading('Ładowanie statystyk wykorzystania bazy', { component: 'general-reports' })
         const stats = await reportsApi.getDatabaseUtilization()
         setDatabaseUtilization(stats)
-        console.log('✅ Załadowano statystyki wykorzystania bazy:', stats)
+        logger.success('Załadowano statystyki wykorzystania bazy', { component: 'general-reports', stats })
       } catch (error) {
-        console.error('❌ Błąd ładowania statystyk wykorzystania bazy:', error)
+        logger.error('Błąd ładowania statystyk wykorzystania bazy', error, { component: 'general-reports' })
       } finally {
         setLoading(false)
       }

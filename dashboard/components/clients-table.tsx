@@ -54,6 +54,7 @@ import { permissionsApi, activityLogsApi, clientsApi, ClientHistory, getAvatarUr
 import { useToast } from "@/hooks/use-toast"
 import { authApi, supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/language-context"
+import { logger } from "@/lib/logger"
 import { useDebounced } from "@/hooks/useDebounced"
 import { useProgressiveData, useSkeletonState } from "@/hooks/useProgressiveLoading"
 import { ClientTableSkeleton, BatchLoadingSkeleton, ContentFadeIn } from "@/components/ui/skeleton"
@@ -287,11 +288,11 @@ export function ClientsTable() {
   
   // 🚀 PROGRESSIVE LOADING: Hook dla progresywnego ładowania klientów
   const handleBatchLoad = useCallback((batch: any[], batchIndex: number) => {
-    console.log(`📊 Progressive loading: batch ${batchIndex + 1} loaded (${batch.length} items)`)
+    logger.debug(`Progressive loading: batch ${batchIndex + 1} loaded`, { count: batch.length })
   }, [])
 
   const handleComplete = useCallback((allData: any[]) => {
-    console.log(`✅ Progressive loading complete: ${allData.length} total items`)
+    logger.success(`Progressive loading complete`, { totalItems: allData.length })
   }, [])
 
   const {
@@ -358,11 +359,11 @@ export function ClientsTable() {
 
     // Sprawdź czy user jest dostępny
     if (!user) {
-      console.warn('⚠️ Brak użytkownika - pomijam konfigurację subskrypcji')
+      logger.warn('Brak użytkownika - pomijam konfigurację subskrypcji', { component: 'clients-table' })
       return
     }
 
-    console.log('🔄 Ustawiam subskrypcję na zmiany właścicieli klientów')
+    logger.loading('Ustawiam subskrypcję na zmiany właścicieli klientów', { component: 'clients-table' })
     
     try {
       const callback = (payload: any) => {

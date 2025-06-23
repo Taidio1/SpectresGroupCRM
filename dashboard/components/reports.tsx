@@ -47,6 +47,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { useAuth } from "@/store/useStore"
 import { reportsApi, type EmployeeStats, type EmployeeActivityStats } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
+import { logger } from "@/lib/logger"
 
 // Dane do raportów
 const dailyStats = {
@@ -222,36 +223,25 @@ export function Reports() {
 
     setLoading(true)
     try {
-      console.log('📊 Ładowanie statystyk pracowników...')
+      logger.loading('Ładowanie statystyk pracowników', { component: 'reports' })
       const stats = await reportsApi.getEmployeeStats(user)
 
-      // 🐛 DEBUG: Sprawdź surowe dane z API
-      console.log('🔍 DEBUG: Surowe dane z API:', stats)
-      console.log('🔍 DEBUG: Przykładowy pierwszy rekord:', stats[0])
-      if (stats[0]) {
-        console.log('🔍 DEBUG: custom_clients_count:', stats[0].custom_clients_count)
-        console.log('🔍 DEBUG: custom_total_payments:', stats[0].custom_total_payments)
-        console.log('🔍 DEBUG: user data:', stats[0].user)
-      }
+      // DEBUG: Sprawdź surowe dane z API (tylko w dev)
+      logger.debug('Surowe dane z API', { count: stats.length, firstRecord: stats[0] })
 
       setEmployeeStatsData(stats)
 
       // Konwertuj na format używany przez UI
       const displayData = mapEmployeeStatsToDisplay(stats)
 
-      // 🐛 DEBUG: Sprawdź dane po mapowaniu
-      console.log('🔍 DEBUG: Dane po mapowaniu:', displayData)
-      console.log('🔍 DEBUG: Przykładowy pierwszy rekord po mapowaniu:', displayData[0])
-      if (displayData[0]) {
-        console.log('🔍 DEBUG: customClientsCount:', displayData[0].customClientsCount)
-        console.log('🔍 DEBUG: customTotalPayments:', displayData[0].customTotalPayments)
-      }
+      // DEBUG: Sprawdź dane po mapowaniu (tylko w dev)
+      logger.debug('Dane po mapowaniu', { count: displayData.length, firstRecord: displayData[0] })
 
       setEmployees(displayData)
 
-      console.log('✅ Załadowano statystyki:', stats.length)
+      logger.success('Załadowano statystyki', { component: 'reports', count: stats.length })
     } catch (error) {
-      console.error('❌ Błąd ładowania statystyk:', error)
+      logger.error('Błąd ładowania statystyk', error, { component: 'reports' })
     } finally {
       setLoading(false)
     }
@@ -263,13 +253,13 @@ export function Reports() {
     
     setLoading(true)
     try {
-      console.log('📊 Ładowanie statystyk aktywności pracowników...')
+      logger.loading('Ładowanie statystyk aktywności pracowników', { component: 'reports' })
       const activityStats = await reportsApi.getEmployeeActivityStats(user)
       
-      console.log('✅ Załadowano statystyki aktywności:', activityStats.length)
+      logger.success('Załadowano statystyki aktywności', { component: 'reports', count: activityStats.length })
       setEmployeeActivityData(activityStats)
     } catch (error) {
-      console.error('❌ Błąd ładowania statystyk aktywności:', error)
+      logger.error('Błąd ładowania statystyk aktywności', error, { component: 'reports' })
     } finally {
       setLoading(false)
     }
@@ -397,7 +387,11 @@ export function Reports() {
 
     setSaving(true)
     try {
-      console.log(`💾 Zapisywanie edycji dla pracownika ${editingEmployee.user_id}:`, editValues)
+      logger.loading(`Zapisywanie edycji dla pracownika ${editingEmployee.name}`, { 
+        component: 'reports', 
+        userId: editingEmployee.user_id,
+        editValues 
+      })
 
       const result = await reportsApi.updateEmployeeClientStats(
         editingEmployee.user_id,
@@ -406,7 +400,7 @@ export function Reports() {
         user
       )
 
-      console.log('✅ Wynik aktualizacji:', result)
+      logger.success('Aktualizacja pomyślna', { component: 'reports', result })
 
       toast({
         title: "Sukces",
@@ -417,7 +411,10 @@ export function Reports() {
       try {
         await loadEmployeeStats()
       } catch (refreshError) {
-        console.warn('⚠️ Nie udało się odświeżyć danych, ale edycja została zapisana:', refreshError)
+        logger.warn('Nie udało się odświeżyć danych, ale edycja została zapisana', { 
+          component: 'reports', 
+          error: refreshError 
+        })
         toast({
           title: "Informacja",
           description: "Edycja zapisana, ale nie udało się odświeżyć widoku. Odśwież stronę manually.",
@@ -430,7 +427,7 @@ export function Reports() {
       setEditValues({ clientsCount: 0, totalPayments: 0 })
 
     } catch (error) {
-      console.error('❌ Błąd zapisywania edycji:', error)
+      logger.error('Błąd zapisywania edycji', error, { component: 'reports' })
 
       // Sprawdź czy to błąd uprawnień
       const errorMessage = error instanceof Error ? error.message : "Nieznany błąd"

@@ -13,6 +13,7 @@ import { useLanguage } from '@/lib/language-context'
 import { clientsApi, Client as SupabaseClient } from '@/lib/supabase'
 import { useAuth } from '@/store/useStore'
 import { useToast } from '@/hooks/use-toast'
+import { logger } from '@/lib/logger'
 
 type ClientStatus = 'canvas' | 'brak_kontaktu' | 'nie_zainteresowany' | 'zdenerwowany' | 'antysale' | 'sale' | '$$'
 
@@ -95,10 +96,13 @@ export function ClientDetailsPopup({ client, isOpen, onClose, onUpdate }: Client
       // Aktualizuj czas ostatniego kliknięcia telefonu jeśli user jest dostępny
       if (user && client) {
         await clientsApi.updateLastPhoneClick(client.id, user)
-        console.log(`📞 Zarejestrowano kliknięcie telefonu w popup dla klienta: ${client.first_name} ${client.last_name}`)
+        logger.debug(`Zarejestrowano kliknięcie telefonu w popup`, { 
+          component: 'client-details-popup', 
+          clientName: `${client.first_name} ${client.last_name}` 
+        })
       }
     } catch (error) {
-      console.error('❌ Błąd rejestrowania kliknięcia telefonu w popup:', error)
+      logger.error('Błąd rejestrowania kliknięcia telefonu w popup', error, { component: 'client-details-popup' })
     }
     
     window.open(`tel:${phone}`, '_self')
@@ -132,7 +136,7 @@ export function ClientDetailsPopup({ client, isOpen, onClose, onUpdate }: Client
 
   const handleSave = async () => {
     if (!user) {
-      console.error('Brak zalogowanego użytkownika')
+      logger.error('Brak zalogowanego użytkownika', null, { component: 'client-details-popup' })
       return
     }
 
@@ -173,7 +177,7 @@ export function ClientDetailsPopup({ client, isOpen, onClose, onUpdate }: Client
 
       setIsEditing(false)
     } catch (error) {
-      console.error('Błąd zapisywania zmian:', error)
+      logger.error('Błąd zapisywania zmian', error, { component: 'client-details-popup' })
       toast({
         title: "Błąd zapisywania",
         description: "Nie udało się zapisać zmian. Spróbuj ponownie.",
