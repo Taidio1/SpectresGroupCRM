@@ -210,6 +210,11 @@ export function Reports() {
   const [editValues, setEditValues] = useState<{ clientsCount: number, totalPayments: number }>({ clientsCount: 0, totalPayments: 0 })
   const [saving, setSaving] = useState(false)
   const [commissionSystemOpen, setCommissionSystemOpen] = useState(false)
+  // Nowe stany dla rzeczywistych danych
+  const [periodStats, setPeriodStats] = useState<any>(null)
+  const [salesTrends, setSalesTrends] = useState<any[]>([])
+  const [teamTrends, setTeamTrends] = useState<any[]>([])
+  const [phoneStats, setPhoneStats] = useState<{ totalPhoneCalls: number, totalPhoneCallsToday: number }>({ totalPhoneCalls: 0, totalPhoneCallsToday: 0 })
   const { user } = useAuth()
   const { toast } = useToast()
   const today = new Date().toLocaleDateString('pl-PL')
@@ -265,13 +270,149 @@ export function Reports() {
     }
   }
 
-  // Ładuj dane przy pierwszym renderze (aktywności również)
+  // Funkcja ładowania danych dla wybranego okresu
+  const loadPeriodData = async () => {
+    if (!user || !hasManagerAccess) return
+
+    setLoading(true)
+    try {
+      logger.loading(`Ładowanie danych dla okresu: ${selectedPeriod}`, { component: 'reports' })
+
+      // Ładuj podstawowe statystyki niezależnie od okresu
+      await Promise.all([
+        loadEmployeeStats(),
+        loadEmployeeActivityStats(),
+        loadPhoneStats(),
+        loadSalesTrends(),
+        loadTeamTrends()
+      ])
+
+      // Ładuj statystyki specyficzne dla okresu
+      if (selectedPeriod === 'today') {
+        const todayDate = new Date().toISOString().split('T')[0]
+        const dailyData = await reportsApi.getDailySummary(todayDate)
+        setPeriodStats({
+          title: 'Dzisiaj',
+          totalClients: dailyData.totalClients,
+          statusBreakdown: dailyData.statusBreakdown,
+          employeeStats: dailyData.employeeStats
+        })
+      } else if (selectedPeriod === 'week') {
+        const endDate = new Date()
+        const startDate = new Date()
+        startDate.setDate(endDate.getDate() - 6)
+        const weeklyData = await reportsApi.getWeeklySummary(
+          startDate.toISOString().split('T')[0],
+          endDate.toISOString().split('T')[0]
+        )
+        
+        // Agreguj dane tygodniowe
+        const statusBreakdown = weeklyData.reduce((acc: any, client: any) => {
+          acc[client.status] = (acc[client.status] || 0) + 1
+          return acc
+        }, {})
+        
+        const employeeStats = weeklyData.reduce((acc: any, client: any) => {
+          acc[client.edited_by] = (acc[client.edited_by] || 0) + 1
+          return acc
+        }, {})
+
+        setPeriodStats({
+          title: 'Ten tydzień',
+          totalClients: weeklyData.length,
+          statusBreakdown,
+          employeeStats,
+          avgPerDay: Math.round(weeklyData.length / 7)
+        })
+      } else if (selectedPeriod === 'month') {
+        const currentDate = new Date()
+        const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1)
+        const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0)
+        
+        const monthlyData = await reportsApi.getWeeklySummary(
+          startOfMonth.toISOString().split('T')[0],
+          endOfMonth.toISOString().split('T')[0]
+        )
+        
+        // Agreguj dane miesięczne
+        const statusBreakdown = monthlyData.reduce((acc: any, client: any) => {
+          acc[client.status] = (acc[client.status] || 0) + 1
+          return acc
+        }, {})
+        
+        const employeeStats = monthlyData.reduce((acc: any, client: any) => {
+          acc[client.edited_by] = (acc[client.edited_by] || 0) + 1
+          return acc
+        }, {})
+
+        setPeriodStats({
+          title: 'Ten miesiąc',
+          totalClients: monthlyData.length,
+          statusBreakdown,
+          employeeStats,
+          avgPerDay: Math.round(monthlyData.length / currentDate.getDate())
+        })
+      }
+
+      logger.success(`Załadowano dane dla okresu: ${selectedPeriod}`, { component: 'reports' })
+    } catch (error) {
+      logger.error('Błąd ładowania danych okresu', error, { component: 'reports' })
+      toast({
+        title: "Błąd",
+        description: "Nie udało się załadować danych dla wybranego okresu",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Funkcja ładowania statystyk telefonów
+  const loadPhoneStats = async () => {
+    if (!user) return
+    try {
+      const stats = await reportsApi.getPhoneClicksStats(user)
+      setPhoneStats(stats)
+    } catch (error) {
+      logger.error('Błąd ładowania statystyk telefonów', error, { component: 'reports' })
+    }
+  }
+
+  // Funkcja ładowania trendów sprzedażowych
+  const loadSalesTrends = async () => {
+    if (!user) return
+    try {
+      const trends = await reportsApi.getSalesTrends(user)
+      setSalesTrends(trends)
+    } catch (error) {
+      logger.error('Błąd ładowania trendów sprzedażowych', error, { component: 'reports' })
+    }
+  }
+
+  // Funkcja ładowania trendów zespołowych
+  const loadTeamTrends = async () => {
+    if (!user) return
+    try {
+      const trends = await reportsApi.getTeamPerformanceTrends(user)
+      setTeamTrends(trends)
+    } catch (error) {
+      logger.error('Błąd ładowania trendów zespołowych', error, { component: 'reports' })
+    }
+  }
+
+  // Ładuj dane przy pierwszym renderze
   useEffect(() => {
     if (user && hasManagerAccess) {
-      loadEmployeeStats()
-      loadEmployeeActivityStats()
+      loadPeriodData()
     }
   }, [user])
+
+  // Ładuj dane przy zmianie okresu
+  useEffect(() => {
+    if (user && hasManagerAccess && selectedPeriod) {
+      loadPeriodData()
+    }
+  }, [selectedPeriod])
 
   // Filtrowanie danych aktywności pracowników
   useEffect(() => {
@@ -487,21 +628,25 @@ export function Reports() {
       </div>
 
       <div className="grid grid-cols-12 gap-6">
-        {/* Podsumowanie dnia */}
+        {/* Podsumowanie okresu */}
         <div className="col-span-12 grid grid-cols-4 gap-4 mb-6">
           <Card className="bg-slate-800 border-slate-700">
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-slate-400">Klienci obsłużeni</p>
-                  <p className="text-3xl font-bold text-white">{dailyStats.totalClients}</p>
+                  <p className="text-3xl font-bold text-white">
+                    {periodStats?.totalClients || 0}
+                  </p>
                   <div className="flex items-center gap-1 mt-1">
                     <TrendingUp className="h-4 w-4 text-green-400" />
-                    <span className="text-sm text-green-400">+12% vs wczoraj</span>
+                    <span className="text-sm text-green-400">
+                      {periodStats?.title || (selectedPeriod === 'today' ? 'Dzisiaj' : selectedPeriod === 'week' ? 'Ten tydzień' : 'Ten miesiąc')}
+                    </span>
                   </div>
                 </div>
-                <div className="text-cyan-400">
-                  <Users className="h-8 w-8" />
+                <div className="bg-cyan-500/20 p-3 rounded-full">
+                  <Users className="h-8 w-8 text-cyan-400" />
                 </div>
               </div>
             </CardContent>
@@ -512,14 +657,18 @@ export function Reports() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-slate-400">Rozmowy</p>
-                  <p className="text-3xl font-bold text-white">47</p>
+                  <p className="text-3xl font-bold text-white">
+                    {selectedPeriod === 'today' ? phoneStats.totalPhoneCallsToday : phoneStats.totalPhoneCalls}
+                  </p>
                   <div className="flex items-center gap-1 mt-1">
                     <TrendingUp className="h-4 w-4 text-green-400" />
-                    <span className="text-sm text-green-400">+8% vs wczoraj</span>
+                    <span className="text-sm text-green-400">
+                      {selectedPeriod === 'today' ? 'Dzisiaj' : 'Łącznie'}
+                    </span>
                   </div>
                 </div>
-                <div className="text-green-400">
-                  <Phone className="h-8 w-8" />
+                <div className="bg-green-500/20 p-3 rounded-full">
+                  <Phone className="h-8 w-8 text-green-400" />
                 </div>
               </div>
             </CardContent>
@@ -529,15 +678,19 @@ export function Reports() {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-slate-400">Konwersja</p>
-                  <p className="text-3xl font-bold text-white">64%</p>
+                  <p className="text-sm text-slate-400">Sale</p>
+                  <p className="text-3xl font-bold text-white">
+                    {periodStats?.statusBreakdown?.sale || 0}
+                  </p>
                   <div className="flex items-center gap-1 mt-1">
-                    <TrendingDown className="h-4 w-4 text-red-400" />
-                    <span className="text-sm text-red-400">-3% vs wczoraj</span>
+                    <TrendingUp className="h-4 w-4 text-green-400" />
+                    <span className="text-sm text-green-400">
+                      Sprzedane
+                    </span>
                   </div>
                 </div>
-                <div className="text-orange-400">
-                  <TrendingUp className="h-8 w-8" />
+                <div className="bg-orange-500/20 p-3 rounded-full">
+                  <Target className="h-8 w-8 text-orange-400" />
                 </div>
               </div>
             </CardContent>
@@ -547,15 +700,19 @@ export function Reports() {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-slate-400">Średni czas rozmowy</p>
-                  <p className="text-3xl font-bold text-white">8:42</p>
+                  <p className="text-sm text-slate-400">Canvas</p>
+                  <p className="text-3xl font-bold text-white">
+                    {periodStats?.statusBreakdown?.canvas || 0}
+                  </p>
                   <div className="flex items-center gap-1 mt-1">
-                    <TrendingUp className="h-4 w-4 text-green-400" />
-                    <span className="text-sm text-green-400">+15s vs wczoraj</span>
+                    <TrendingUp className="h-4 w-4 text-blue-400" />
+                    <span className="text-sm text-blue-400">
+                      W trakcie
+                    </span>
                   </div>
                 </div>
-                <div className="text-purple-400">
-                  <MessageSquare className="h-8 w-8" />
+                <div className="bg-purple-500/20 p-3 rounded-full">
+                  <Award className="h-8 w-8 text-purple-400" />
                 </div>
               </div>
             </CardContent>
@@ -566,35 +723,61 @@ export function Reports() {
         <Card className="col-span-6 bg-slate-800 border-slate-700">
           <CardHeader>
             <CardTitle className="text-white">Rozkład statusów klientów</CardTitle>
-            <p className="text-sm text-slate-400">Dzisiejsze statystyki</p>
+            <p className="text-sm text-slate-400">
+              {periodStats?.title || 'Statystyki za wybrany okres'}
+            </p>
           </CardHeader>
           <CardContent>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={statusChartData}
+                    data={periodStats?.statusBreakdown ? Object.entries(periodStats.statusBreakdown).map(([status, count]) => ({
+                      name: status,
+                      value: count as number,
+                      color: status === 'canvas' ? '#06b6d4' :
+                        status === 'sale' ? '#10b981' :
+                          status === 'antysale' ? '#f59e0b' :
+                            status === 'brak kontaktu' ? '#6b7280' :
+                              status === 'nie jest zainteresowany' ? '#ef4444' : '#dc2626'
+                    })) : []}
                     cx="50%"
                     cy="50%"
                     innerRadius={60}
                     outerRadius={100}
                     dataKey="value"
                   >
-                    {statusChartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
+                    {periodStats?.statusBreakdown ? Object.entries(periodStats.statusBreakdown).map(([status, count], index) => (
+                      <Cell key={`cell-${index}`} fill={
+                        status === 'canvas' ? '#06b6d4' :
+                        status === 'sale' ? '#10b981' :
+                          status === 'antysale' ? '#f59e0b' :
+                            status === 'brak kontaktu' ? '#6b7280' :
+                              status === 'nie jest zainteresowany' ? '#ef4444' : '#dc2626'
+                      } />
+                    )) : null}
                   </Pie>
                 </PieChart>
               </ResponsiveContainer>
             </div>
             <div className="grid grid-cols-2 gap-2 mt-4">
-              {statusChartData.map((item, index) => (
+              {periodStats?.statusBreakdown ? Object.entries(periodStats.statusBreakdown).map(([status, count], index) => (
                 <div key={index} className="flex items-center gap-2 text-sm">
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
-                  <span className="text-slate-300 truncate">{item.name}</span>
-                  <span className="font-semibold text-white ml-auto">{item.value}</span>
+                  <div className="w-3 h-3 rounded-full" style={{ 
+                    backgroundColor: status === 'canvas' ? '#06b6d4' :
+                      status === 'sale' ? '#10b981' :
+                        status === 'antysale' ? '#f59e0b' :
+                          status === 'brak kontaktu' ? '#6b7280' :
+                            status === 'nie jest zainteresowany' ? '#ef4444' : '#dc2626'
+                  }}></div>
+                  <span className="text-slate-300 truncate">{status}</span>
+                  <span className="font-semibold text-white ml-auto">{count as number}</span>
                 </div>
-              ))}
+              )) : (
+                <div className="col-span-2 text-center text-slate-400">
+                  Brak danych dla wybranego okresu
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

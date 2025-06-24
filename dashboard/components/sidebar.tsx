@@ -15,6 +15,7 @@ import {
   FileText,
   Award,
   Shield,
+  PhoneCall,
 } from "lucide-react"
 import { authApi } from "@/lib/supabase"
 import { useAuth } from "@/store/useStore"
@@ -149,6 +150,17 @@ export function Sidebar() {
             </Link>
           )
         })}
+
+        <Link href="/calls">
+          <div className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors cursor-pointer ${
+            pathname === '/calls'
+              ? "bg-cyan-500/20 text-cyan-400" 
+              : "text-slate-300 hover:bg-slate-700 hover:text-white"
+          }`}>
+            <PhoneCall className="h-4 w-4" />
+            <span>Połączenia</span>
+          </div>
+        </Link>
       </nav>
 
       <div className="absolute bottom-4 left-4 right-4 space-y-2">

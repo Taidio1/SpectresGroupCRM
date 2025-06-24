@@ -104,9 +104,9 @@ export function MyStatsPage() {
     if (!user || user.role !== 'pracownik') return
 
     try {
-      // Ustaw czerwiec 2025
+      // Ustaw czerwiec 2025 - API oczekuje normalnego numeru miesiąca (1-12)
       const year = 2025
-      const month = 6 // czerwiec
+      const month = 6 // czerwiec (normalny numer miesiąca)
       
       logger.loading('Ładowanie godzin pracy dla czerwca 2025', { component: 'my-stats' })
       const hours = await reportsApi.getWorkingHoursForMonth(user, year, month)
@@ -123,7 +123,7 @@ export function MyStatsPage() {
 
   // Funkcja do generowania dni roboczych w czerwcu 2025
   const getWorkingDaysInMonth = (): WorkingDay[] => {
-    // Ustaw czerwiec 2025
+    // Ustaw czerwiec 2025 - używamy indeksu JavaScript
     const year = 2025
     const month = 5 // czerwiec (indeks 5, bo miesiące są 0-11)
     

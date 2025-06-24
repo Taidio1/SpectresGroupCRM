@@ -2745,8 +2745,15 @@ export const reportsApi = {
         throw new Error('Dostęp tylko dla pracowników')
       }
 
-      // Sprawdź czy to dzień roboczy (pon-pt)
-      const dayOfWeek = new Date(date).getDay()
+      // Sprawdź czy to dzień roboczy (pon-pt) - bezpieczne parsowanie daty
+      const dateParts = date.split('-') // "2025-06-02" -> ["2025", "06", "02"]
+      const year = parseInt(dateParts[0])
+      const month = parseInt(dateParts[1]) - 1 // -1 bo JavaScript używa 0-11 dla miesięcy
+      const day = parseInt(dateParts[2])
+      const dayOfWeek = new Date(year, month, day).getDay()
+      
+      console.log(`🗓️ Sprawdzanie dnia roboczego: ${date} => dayOfWeek=${dayOfWeek} (${['nie', 'pon', 'wt', 'śr', 'czw', 'pt', 'sob'][dayOfWeek]})`)
+      
       if (dayOfWeek === 0 || dayOfWeek === 6) { // 0 = niedziela, 6 = sobota
         throw new Error('Można wpisywać godziny tylko dla dni roboczych (pon-pt)')
       }
@@ -2809,17 +2816,19 @@ export const reportsApi = {
         throw new Error('Dostęp tylko dla pracowników')
       }
 
-      // Oblicz pierwszy i ostatni dzień miesiąca
-      const startDate = new Date(year, month - 1, 1)
-      const endDate = new Date(year, month, 0)
+      // Oblicz pierwszy i ostatni dzień miesiąca (poprawka strefy czasowej)
+      const startDate = `${year}-${month.toString().padStart(2, '0')}-01`
+      const endDate = `${year}-${month.toString().padStart(2, '0')}-${new Date(year, month, 0).getDate().toString().padStart(2, '0')}`
+
+      console.log(`📅 Pobieranie godzin dla zakresu: ${startDate} - ${endDate}`)
 
       // Pobierz godziny pracy z tabeli working_hours (tabela już istnieje)
       const { data, error } = await supabase
         .from('working_hours')
         .select('work_date, hours_worked')
         .eq('user_id', user.id)
-        .gte('work_date', startDate.toISOString().split('T')[0])
-        .lte('work_date', endDate.toISOString().split('T')[0])
+        .gte('work_date', startDate)
+        .lte('work_date', endDate)
 
       if (error) {
         console.error('❌ Błąd pobierania godzin pracy z bazy:', error)
@@ -2832,8 +2841,8 @@ export const reportsApi = {
         // Filtruj dane dla odpowiedniego miesiąca
         const hoursMap: Record<string, number> = {}
         Object.entries(storedData).forEach(([date, hours]) => {
-          const dateObj = new Date(date)
-          if (dateObj >= startDate && dateObj <= endDate) {
+          // Użyj porównania stringów dla dat w formacie YYYY-MM-DD
+          if (date >= startDate && date <= endDate) {
             hoursMap[date] = hours as number
           }
         })
@@ -2862,13 +2871,13 @@ export const reportsApi = {
         const storedData = JSON.parse(localStorage.getItem(storageKey) || '{}')
         
         // Filtruj dane dla odpowiedniego miesiąca
-        const startDate = new Date(year, month - 1, 1)
-        const endDate = new Date(year, month, 0)
+        const startDateStr = `${year}-${month.toString().padStart(2, '0')}-01`
+        const endDateStr = `${year}-${month.toString().padStart(2, '0')}-${new Date(year, month, 0).getDate().toString().padStart(2, '0')}`
         const hoursMap: Record<string, number> = {}
         
         Object.entries(storedData).forEach(([date, hours]) => {
-          const dateObj = new Date(date)
-          if (dateObj >= startDate && dateObj <= endDate) {
+          // Użyj porównania stringów dla dat w formacie YYYY-MM-DD
+          if (date >= startDateStr && date <= endDateStr) {
             hoursMap[date] = hours as number
           }
         })
@@ -3688,3 +3697,229 @@ export interface EmployeeActivityStats {
     role: string
   }
 } 
+
+// =====================================================================================
+// CALLS API - HISTORIA POŁĄCZEŃ TELEFONICZNYCH
+// =====================================================================================
+
+export interface CallRecord {
+  id: string
+  client_id: string
+  client_name: string
+  client_company: string
+  client_phone: string
+  called_by: string
+  caller_name: string
+  caller_role: string
+  caller_avatar?: string
+  call_timestamp: string
+  location_id?: string
+  location_name?: string
+  location_code?: string
+}
+
+export interface CallsFilter {
+  locationId?: string | null
+  userId?: string
+  startDate?: string
+  endDate?: string
+  limit?: number
+}
+
+export const callsApi = {
+  /**
+   * 📞 POBIERZ HISTORIĘ POŁĄCZEŃ
+   * 
+   * Pobiera historię połączeń telefonicznych z activity_logs
+   * Uwzględnia uprawnienia użytkownika:
+   * - Admin/Szef: wszystkie połączenia z wybranego kraju
+   * - Project Manager/Junior Manager: wszystkie z ich lokalizacji
+   * - Pracownik: tylko swoje połączenia
+   */
+  async getCalls(user: User, filter: CallsFilter = {}): Promise<CallRecord[]> {
+    try {
+      console.log('📞 Pobieranie historii połączeń...', { user: user.role, filter })
+
+      let query = supabase
+        .from('activity_logs')
+        .select(`
+          id,
+          client_id,
+          changed_by,
+          timestamp,
+          clients!inner (
+            id,
+            first_name,
+            last_name,
+            company_name,
+            phone,
+            location_id,
+            location:locations (
+              id,
+              name,
+              code
+            )
+          )
+        `)
+        .eq('field_changed', 'last_phone_click')
+        .order('timestamp', { ascending: false })
+        .limit(filter.limit || 100)
+
+      // Filtrowanie według uprawnień użytkownika
+      if (user.role === 'pracownik') {
+        // Pracownik widzi tylko swoje połączenia
+        query = query.eq('changed_by', user.id)
+      } else if (['junior_manager', 'manager', 'project_manager'].includes(user.role)) {
+        // Menedżerowie widzą połączenia z ich lokalizacji
+        if (filter.locationId) {
+          // Jeśli wybrano konkretną lokalizację, filtruj po niej
+          query = query.eq('clients.location_id', filter.locationId)
+        } else if (user.location_id) {
+          // Jeśli nie wybrano lokalizacji, pokaż z lokalizacji użytkownika
+          query = query.eq('clients.location_id', user.location_id)
+        }
+      } else if (['szef', 'admin'].includes(user.role)) {
+        // Szef i admin widzą wszystko, opcjonalnie filtrowane po lokalizacji
+        if (filter.locationId) {
+          query = query.eq('clients.location_id', filter.locationId)
+        }
+      }
+
+      // Dodatkowe filtry czasowe
+      if (filter.startDate) {
+        query = query.gte('timestamp', filter.startDate)
+      }
+      if (filter.endDate) {
+        query = query.lte('timestamp', filter.endDate)
+      }
+
+      const { data: callLogs, error } = await query
+
+      if (error) {
+        console.error('❌ Błąd pobierania połączeń:', error)
+        throw error
+      }
+
+      if (!callLogs || callLogs.length === 0) {
+        console.log('📞 Brak połączeń dla podanych kryteriów')
+        return []
+      }
+
+      // Pobierz informacje o użytkownikach (dzwoniących)
+      const callerIds = [...new Set(callLogs.map(log => log.changed_by))]
+      const { data: callers, error: callersError } = await supabase
+        .from('users')
+        .select('id, full_name, role, avatar_url')
+        .in('id', callerIds)
+
+      if (callersError) {
+        console.error('❌ Błąd pobierania użytkowników:', callersError)
+        // Kontynuuj bez szczegółów użytkowników
+      }
+
+      // Stwórz mapę użytkowników
+      const callersMap = (callers || []).reduce((acc, caller) => {
+        acc[caller.id] = caller
+        return acc
+      }, {} as Record<string, any>)
+
+             // Przekształć dane na format CallRecord
+       const callRecords: CallRecord[] = callLogs.map(log => {
+         const client = Array.isArray(log.clients) ? log.clients[0] : log.clients
+         const caller = callersMap[log.changed_by]
+         const location = Array.isArray(client?.location) ? client.location[0] : client?.location
+
+         return {
+           id: log.id,
+           client_id: log.client_id,
+           client_name: client ? `${client.first_name} ${client.last_name}`.trim() : 'Nieznany klient',
+           client_company: client?.company_name || 'Brak informacji',
+           client_phone: client?.phone || 'Brak telefonu',
+           called_by: log.changed_by,
+           caller_name: caller?.full_name || 'Nieznany użytkownik',
+           caller_role: caller?.role || 'unknown',
+           caller_avatar: caller?.avatar_url || null,
+           call_timestamp: log.timestamp,
+           location_id: client?.location_id || null,
+           location_name: location?.name || null,
+           location_code: location?.code || null
+         }
+       })
+
+      console.log(`✅ Pobrano ${callRecords.length} rekordów połączeń`)
+      return callRecords
+
+    } catch (error) {
+      console.error('❌ Błąd w callsApi.getCalls:', error)
+      throw error
+    }
+  },
+
+  /**
+   * 📊 POBIERZ STATYSTYKI POŁĄCZEŃ
+   * 
+   * Pobiera statystyki połączeń dla wybranego okresu
+   */
+  async getCallsStats(user: User, filter: CallsFilter = {}): Promise<{
+    totalCalls: number
+    callsToday: number
+    callsThisWeek: number
+    callsThisMonth: number
+    topCallers: Array<{ name: string, role: string, count: number, avatar?: string }>
+  }> {
+    try {
+      console.log('📊 Pobieranie statystyk połączeń...')
+
+      const now = new Date()
+      const today = now.toISOString().split('T')[0]
+      const weekStart = new Date(now.setDate(now.getDate() - now.getDay())).toISOString().split('T')[0]
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+
+      // Pobierz wszystkie połączenia zgodnie z uprawnieniami
+      const allCalls = await callsApi.getCalls(user, { ...filter, limit: 1000 })
+
+      // Zlicz statystyki
+      const totalCalls = allCalls.length
+      const callsToday = allCalls.filter(call => call.call_timestamp.startsWith(today)).length
+      const callsThisWeek = allCalls.filter(call => call.call_timestamp >= weekStart).length
+      const callsThisMonth = allCalls.filter(call => call.call_timestamp >= monthStart).length
+
+      // Top dzwoniący
+      const callerCounts = allCalls.reduce((acc, call) => {
+        const key = call.called_by
+        if (!acc[key]) {
+          acc[key] = {
+            name: call.caller_name,
+            role: call.caller_role,
+            avatar: call.caller_avatar,
+            count: 0
+          }
+        }
+        acc[key].count++
+        return acc
+      }, {} as Record<string, { name: string, role: string, avatar?: string, count: number }>)
+
+      const topCallers = Object.values(callerCounts)
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5)
+
+      return {
+        totalCalls,
+        callsToday,
+        callsThisWeek,
+        callsThisMonth,
+        topCallers
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd pobierania statystyk połączeń:', error)
+      return {
+        totalCalls: 0,
+        callsToday: 0,
+        callsThisWeek: 0,
+        callsThisMonth: 0,
+        topCallers: []
+      }
+    }
+  }
+}

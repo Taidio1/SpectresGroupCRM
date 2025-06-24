@@ -949,11 +949,7 @@ export function ClientsTable() {
         bValue = b.owner?.full_name || ''
       }
 
-      // Obsługa sortowania po lokalizacji
-      if (sortField === 'location') {
-        aValue = a.location?.name || ''
-        bValue = b.location?.name || ''
-      }
+
 
       // Obsługa sortowania po imię + nazwisko
       if (sortField === 'name') {
@@ -1939,15 +1935,7 @@ export function ClientsTable() {
                         {getSortIcon('owner')}
                       </button>
                     </TableHead>
-                    <TableHead className="text-slate-400">
-                      <button
-                        onClick={() => handleSort('location')}
-                        className="flex items-center gap-2 hover:text-white transition-colors"
-                      >
-                        Kraj
-                        {getSortIcon('location')}
-                      </button>
-                    </TableHead>
+
                     <TableHead className="text-slate-400">Notatka</TableHead>
                     <TableHead className="text-slate-400">Przypomnienie</TableHead>
                     <TableHead className="text-slate-400">Akcje</TableHead>
@@ -1956,7 +1944,7 @@ export function ClientsTable() {
                 <TableBody>
                   {progressiveClients.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-8 text-slate-400">
+                      <TableCell colSpan={8} className="text-center py-8 text-slate-400">
                         Brak klientów do wyświetlenia
                       </TableCell>
                     </TableRow>
@@ -2168,32 +2156,7 @@ export function ClientsTable() {
                             })()}
                           </TooltipProvider>
                         </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <LocationBadge 
-                              location={client.location} 
-                              showCurrency={false}
-                              variant="outline"
-                            />
-                            {!client.location && client.location_id && (
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger>
-                                    <Badge variant="outline" className="text-orange-400 border-orange-500/30">
-                                      {client.location_id.slice(0, 8)}...
-                                    </Badge>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    <p>Lokalizacja niedostępna (ID: {client.location_id})</p>
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            )}
-                            {!client.location && !client.location_id && (
-                              <span className="text-slate-500 text-sm">Brak</span>
-                            )}
-                          </div>
-                        </TableCell>
+
                         <TableCell>
                           <div className="text-sm text-slate-300 max-w-[200px] truncate">
                             {client.notes || '-'}
