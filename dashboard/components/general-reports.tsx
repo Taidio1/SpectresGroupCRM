@@ -46,6 +46,7 @@ const statusDistributionData = [
   { name: 'Brak kontaktu', value: 198, color: '#6b7280' },
   { name: 'Nie zainteresowany', value: 105, color: '#ef4444' },
   { name: 'Zdenerwowany', value: 41, color: '#dc2626' },
+  { name: 'Nowy', value: 28, color: '#a855f7' },
 ]
 
 const employeePerformanceData = [
@@ -280,7 +281,7 @@ export function GeneralReports() {
 
       <div className="grid grid-cols-12 gap-6">
         {/* Trend tygodniowy */}
-        <Card className="col-span-8 bg-slate-800 border-slate-700">
+        <Card className="col-span-6 bg-slate-800 border-slate-700">
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle className="text-white flex items-center gap-2">
@@ -358,48 +359,6 @@ export function GeneralReports() {
           </CardContent>
         </Card>
 
-        {/* Rozkład statusów */}
-        <Card className="col-span-4 bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <PieChart className="h-5 w-5" />
-              Rozkład statusów
-            </CardTitle>
-            <p className="text-sm text-slate-400">Łączne zmiany statusów</p>
-          </CardHeader>
-          <CardContent>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <RechartsPieChart>
-                  <Pie 
-                    data={statusDistributionData} 
-                    cx="50%" 
-                    cy="50%" 
-                    innerRadius={50} 
-                    outerRadius={90} 
-                    dataKey="value"
-                  >
-                    {statusDistributionData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                </RechartsPieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="grid grid-cols-1 gap-2 mt-4">
-              {statusDistributionData.map((item, index) => (
-                <div key={index} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }}></div>
-                    <span className="text-slate-300">{item.name}</span>
-                  </div>
-                  <span className="font-semibold text-white">{item.value}</span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
         {/* Wydajność pracowników */}
         <Card className="col-span-6 bg-slate-800 border-slate-700">
           <CardHeader>
@@ -430,41 +389,6 @@ export function GeneralReports() {
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 bg-green-400 rounded-full"></div>
                 <span className="text-slate-400">Konwersja (%)</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Trend miesięczny */}
-        <Card className="col-span-6 bg-slate-800 border-slate-700">
-          <CardHeader>
-            <CardTitle className="text-white">Trend miesięczny</CardTitle>
-            <p className="text-sm text-slate-400">Rozwój w czasie</p>
-          </CardHeader>
-          <CardContent>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={monthlyTrendData}>
-                  <XAxis 
-                    dataKey="month" 
-                    axisLine={false} 
-                    tickLine={false} 
-                    tick={{ fill: "#94a3b8", fontSize: 12 }} 
-                  />
-                  <YAxis hide />
-                  <Line type="monotone" dataKey="telefony" stroke="#06b6d4" strokeWidth={2} />
-                  <Line type="monotone" dataKey="klienci" stroke="#f59e0b" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="flex justify-center gap-6 mt-4 text-sm">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-cyan-400 rounded-full"></div>
-                <span className="text-slate-400">Telefony</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-orange-400 rounded-full"></div>
-                <span className="text-slate-400">Klienci</span>
               </div>
             </div>
           </CardContent>

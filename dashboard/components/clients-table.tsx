@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   BarChart3,
   Bell,
@@ -60,6 +60,17 @@ import { useProgressiveData, useSkeletonState } from "@/hooks/useProgressiveLoad
 import { LocationFilter, LocationBadge, LocationHeader } from "@/components/location-filter"
 import { ClientTableSkeleton, BatchLoadingSkeleton, ContentFadeIn } from "@/components/ui/skeleton"
 import { LazyClientDetailsPopupWrapper, usePreloadComponent, preloadComponents } from "@/components/LazyComponents"
+
+// 🚀 PERFORMANCE: Import React Query hooks for optimized data fetching
+import { 
+  useClients, 
+  useClientsPaginated, 
+  useCreateClient, 
+  useUpdateClient, 
+  useDeleteClient,
+  useOptimisticClientUpdate 
+} from "@/hooks/queries/use-clients"
+import { useUsers, useOwners } from "@/hooks/queries/use-users"
 
 
 // Mockowane dane klientów zgodnie z ETAPEM 5
@@ -200,6 +211,7 @@ const statusOptions = [
   'antysale',
   'sale',
   '$$',
+  'nowy',
 ] as const
 
 const statusColors = {
@@ -210,6 +222,7 @@ const statusColors = {
   'antysale': 'bg-orange-500/20 text-orange-400 border-orange-500/30',
   'sale': 'bg-green-500/20 text-green-400 border-green-500/30',
   '$$': 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+  'nowy': 'bg-purple-500/20 text-purple-400 border-purple-500/30',
 }
 
 // Pusty template dla nowego klienta
@@ -245,9 +258,12 @@ export function ClientsTable() {
   const { user } = useAuth()
   const { toast } = useToast()
   const { t } = useLanguage()
+  
+  // 🚀 PERFORMANCE: Legacy state for backward compatibility (minimal set)
   const [clients, setClients] = useState<any[]>([])
-  const [filteredClients, setFilteredClients] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  
+  // 🚀 PERFORMANCE: Component state for UI interactions
   const [savingNewClient, setSavingNewClient] = useState(false)
   const [editingClient, setEditingClient] = useState<any>(null)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
@@ -255,7 +271,7 @@ export function ClientsTable() {
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false)
   const [newClient, setNewClient] = useState(emptyClient)
   
-  // Stany dla upload plików
+  // Upload states
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [dragActive, setDragActive] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -263,36 +279,74 @@ export function ClientsTable() {
   const [importResults, setImportResults] = useState<{ success: number, errors: any[] } | null>(null)
   const [columnAnalysis, setColumnAnalysis] = useState<{ found: string[], missing: string[], optional: string[] } | null>(null)
   
-  // Stan dla wyboru lokalizacji podczas importu CSV
+  // CSV import location state
   const [selectedImportLocation, setSelectedImportLocation] = useState<string | null>(null)
   const [availableLocations, setAvailableLocations] = useState<any[]>([])
   const [currentUser] = useState('current_user')
   const [clientHistory, setClientHistory] = useState<ClientHistory[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
-  const [historyLoaded, setHistoryLoaded] = useState(false) // Dodaj stan śledzenia czy historia została załadowana
+  const [historyLoaded, setHistoryLoaded] = useState(false)
   
-  // 🚀 PERFORMANCE: Debounced Search - zapobiega nadmiernym zapytaniom przy wpisywaniu
+  // 🚀 PERFORMANCE: Filter and sort states (used by React Query)
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedSearchQuery = useDebounced(searchQuery, 300) // 300ms delay
   const [ownerFilter, setOwnerFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
-  const [locationFilter, setLocationFilter] = useState<string | null>(null) // Filtr lokalizacji
+  const [locationFilter, setLocationFilter] = useState<string | null>(null)
   const [availableOwners, setAvailableOwners] = useState<any[]>([])
   
-  // Stan dla WSZYSTKICH użytkowników w systemie (do wyświetlania właścicieli)
+  // Legacy user state (will be replaced by React Query)
   const [allUsers, setAllUsers] = useState<any[]>([])
   
-  // Sortowanie
+  // Sorting states
   const [sortField, setSortField] = useState<string>('updated_at')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
   
-  // 🚀 PERFORMANCE: Paginacja z Progressive Loading
+  // 🚀 PERFORMANCE: Pagination handled by React Query
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(25) // Default 25 elementów na stronę
+  const [pageSize, setPageSize] = useState(25) // Default 25 elements per page
   const [totalPages, setTotalPages] = useState(0)
-  const [paginatedClients, setPaginatedClients] = useState<any[]>([])
   
-  // 🚀 PROGRESSIVE LOADING: Hook dla progresywnego ładowania klientów
+  // 🎯 REACT QUERY OPTIMIZATION: Replace legacy data fetching with cached queries
+  const filters = useMemo(() => ({
+    search: debouncedSearchQuery,
+    status: statusFilter === 'all' ? undefined : statusFilter,
+    owner: ownerFilter === 'all' ? undefined : ownerFilter,
+    location: locationFilter
+  }), [debouncedSearchQuery, statusFilter, ownerFilter, locationFilter])
+  
+  // 🚀 MAIN OPTIMIZATION: Replace multiple API calls with single cached query
+  const { 
+    data: paginatedData, 
+    isLoading: isLoadingClients, 
+    error: clientsError,
+    refetch: refetchClients 
+  } = useClientsPaginated(currentPage, pageSize, filters)
+  
+  // 🚀 SHARED CACHE: Users loaded once and shared across all components
+  const { 
+    data: cachedUsers = [], 
+    isLoading: isLoadingUsers 
+  } = useUsers()
+  
+  const { 
+    data: cachedOwners = [], 
+    isLoading: isLoadingOwners 
+  } = useOwners()
+  
+  // 🎯 OPTIMIZED MUTATIONS: Auto-update cache, optimistic updates
+  const createClientMutation = useCreateClient()
+  const updateClientMutation = useUpdateClient()
+  const deleteClientMutation = useDeleteClient()
+  const optimisticUpdate = useOptimisticClientUpdate()
+  
+  // 🚀 PERFORMANCE: Override legacy state with cached data
+  const isOptimizedDataReady = paginatedData && cachedUsers.length > 0
+  
+  // Replace legacy loading state with optimized loading
+  const optimizedLoading = isLoadingClients || isLoadingUsers || isLoadingOwners
+  
+  // 🚀 PROGRESSIVE LOADING: Stable callbacks for progressive loading
   const handleBatchLoad = useCallback((batch: any[], batchIndex: number) => {
     logger.debug(`Progressive loading: batch ${batchIndex + 1} loaded`, { count: batch.length })
   }, [])
@@ -301,13 +355,16 @@ export function ClientsTable() {
     logger.success(`Progressive loading complete`, { totalItems: allData.length })
   }, [])
 
+  // 🚀 MEMOIZED: Stable client data for progressive loading
+  const memoizedClients = useMemo(() => paginatedData?.clients || [], [paginatedData?.clients])
+  
   const {
     loadedData: progressiveClients,
     isLoading: isProgressiveLoading,
     progress: loadingProgress,
     currentBatch,
     totalBatches
-  } = useProgressiveData(paginatedClients, {
+  } = useProgressiveData(memoizedClients, {
     batchSize: 15, // Ładuj 15 klientów na raz dla smooth UX
     delay: 30, // 30ms między batches - smooth ale szybkie
     onBatchLoad: handleBatchLoad,
@@ -568,67 +625,11 @@ export function ClientsTable() {
     }
   }
 
-    // Funkcja do ładowania klientów z bazy danych
-  const loadClientsFromDatabase = async () => {
-    if (!user) return
-    
-    setLoading(true)
-    try {
-      console.log('🔄 Ładowanie klientów z bazy danych...')
-      
-      const dbClients = await clientsApi.getClients(user)
-      console.log(`✅ Załadowano ${dbClients.length} klientów z bazy danych`)
-      
-      // Dodaj właściwości UI do danych z bazy
-      const clientsWithUI = dbClients.map(client => ({
-        ...client,
-        isBeingEdited: false,
-        editedByUser: null,
-        reminder: client.reminder || {
-          enabled: false,
-          date: '',
-          time: '',
-          note: ''
-        }
-      }))
+  // 🚀 OPTIMIZED: Function replaced by React Query hooks
+  // loadClientsFromDatabase removed - data loading handled by useClientsPaginated
 
-      // Debug: pokaż statystyki właścicieli
-      const clientsWithOwners = clientsWithUI.filter(client => client.owner)
-      const clientsWithoutOwners = clientsWithUI.filter(client => !client.owner && client.owner_id)
-      const clientsWithoutAnyOwner = clientsWithUI.filter(client => !client.owner && !client.owner_id)
-      
-
-      if (clientsWithoutOwners.length > 0) {
-        console.log('⚠️ Klienci z błędnymi owner_id:', clientsWithoutOwners.map(c => ({
-          name: `${c.first_name} ${c.last_name}`,
-          owner_id: c.owner_id
-        })))
-      }
-      
-      setClients(clientsWithUI)
-      
-      // Pobierz listę wszystkich użytkowników (do wyświetlania właścicieli)
-      await loadAllUsers()
-      
-      // Pobierz listę dostępnych właścicieli na podstawie uprawnień (do filtrowania)
-      await loadAvailableOwners(clientsWithUI)
-      
-    } catch (error) {
-      console.error('❌ Błąd ładowania klientów:', error)
-      
-      toast({
-        title: "Błąd",
-        description: "Nie udało się załadować klientów z bazy danych. Sprawdź czy zostały uruchomione poprawki RLS.",
-        variant: "destructive",
-        duration: 5000
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-    // Funkcja do ładowania wszystkich użytkowników (do wyświetlania właścicieli)
-  const loadAllUsers = async () => {
+  // 🚀 STABILIZED: Function to load all users for display
+  const loadAllUsers = useCallback(async () => {
     if (!user) return
 
     try {
@@ -664,7 +665,7 @@ export function ClientsTable() {
         variant: "destructive"
       })
     }
-  }
+  }, [user, toast])
 
   // Funkcja do ładowania dostępnych właścicieli na podstawie uprawnień (tylko do filtrowania)
   const loadAvailableOwners = async (clientsList: any[]) => {
@@ -699,61 +700,11 @@ export function ClientsTable() {
     }
   }
 
-  // 🚀 PERFORMANCE: Funkcja filtrowania klientów z debounced search
-  const filterClients = () => {
-    if (!clients.length) return
+  // 🚀 OPTIMIZED: Filtering is now handled server-side by React Query
+  // Removed filterClients() function - all filtering/sorting/pagination handled by useClientsPaginated hook
 
-    let filtered = clients
-
-    // Filtr wyszukiwania - używa debounced query dla lepszej wydajności
-    if (debouncedSearchQuery.trim()) {
-      const query = debouncedSearchQuery.toLowerCase()
-      filtered = filtered.filter(client =>
-        client.first_name.toLowerCase().includes(query) ||
-        client.last_name.toLowerCase().includes(query) ||
-        client.company_name.toLowerCase().includes(query) ||
-        client.phone.includes(query) ||
-        client.email.toLowerCase().includes(query)
-      )
-    }
-
-    // Filtr właściciela na podstawie uprawnień
-    if (ownerFilter !== 'all') {
-      if (ownerFilter === 'no_owner') {
-        // Klienci bez właściciela
-        filtered = filtered.filter(client => !client.owner)
-      } else if (ownerFilter === 'my_clients' && user) {
-        // Klienci aktualnego użytkownika (dla pracowników)
-        filtered = filtered.filter(client => client.owner?.id === user.id)
-      } else {
-        // Konkretny właściciel (dla manager+)
-        filtered = filtered.filter(client => client.owner?.id === ownerFilter)
-      }
-    }
-
-    // Filtr statusu
-    if (statusFilter !== 'all') {
-      filtered = filtered.filter(client => client.status === statusFilter)
-    }
-
-    // 🌍 NOWY: Filtr lokalizacji
-    if (locationFilter) {
-      filtered = filtered.filter(client => client.location_id === locationFilter)
-    }
-
-    // Zastosuj sortowanie
-    const sorted = sortClients(filtered)
-    setFilteredClients(sorted)
-
-    // Zastosuj paginację
-    const paginated = paginateClients(sorted)
-    setPaginatedClients(paginated)
-  }
-
-  // 🚀 PERFORMANCE: Efekt filtrowania z debounced search
-  useEffect(() => {
-    filterClients()
-  }, [clients, debouncedSearchQuery, ownerFilter, statusFilter, locationFilter, sortField, sortDirection, currentPage, pageSize])
+  // 🚀 OPTIMIZED: Filtering is now handled by React Query server-side
+  // Removed old filterClients() effect that was causing infinite loops
 
   // Efekt resetowania strony przy zmianie filtrów - używa oryginalnego searchQuery dla natychmiastowej reakcji
   useEffect(() => {
@@ -856,8 +807,8 @@ export function ClientsTable() {
         variant: result.errors.length > 0 ? "destructive" : "default"
       })
 
-      // Przeładuj dane po czyszczeniu
-      await loadClientsFromDatabase()
+      // 🚀 OPTIMIZED: Refetch data using React Query
+      await refetchClients()
     } catch (error) {
       console.error('Błąd czyszczenia:', error)
       toast({
@@ -937,49 +888,8 @@ export function ClientsTable() {
     setCurrentPage(1) // Reset do pierwszej strony po sortowaniu
   }
 
-  // Funkcja sortowania danych
-  const sortClients = (clients: any[]) => {
-    return [...clients].sort((a, b) => {
-      let aValue = a[sortField]
-      let bValue = b[sortField]
-
-      // Obsługa sortowania po właścicielu
-      if (sortField === 'owner') {
-        aValue = a.owner?.full_name || ''
-        bValue = b.owner?.full_name || ''
-      }
-
-
-
-      // Obsługa sortowania po imię + nazwisko
-      if (sortField === 'name') {
-        aValue = `${a.first_name} ${a.last_name}`
-        bValue = `${b.first_name} ${b.last_name}`
-      }
-
-      // Konwersja na string dla porównania
-      aValue = String(aValue || '').toLowerCase()
-      bValue = String(bValue || '').toLowerCase()
-
-      if (sortDirection === 'asc') {
-        return aValue.localeCompare(bValue, 'pl', { numeric: true })
-      } else {
-        return bValue.localeCompare(aValue, 'pl', { numeric: true })
-      }
-    })
-  }
-
-  // Funkcja paginacji
-  const paginateClients = (clients: any[]) => {
-    const startIndex = (currentPage - 1) * pageSize
-    const endIndex = startIndex + pageSize
-    const paginated = clients.slice(startIndex, endIndex)
-    
-    const total = Math.ceil(clients.length / pageSize)
-    setTotalPages(total)
-    
-    return paginated
-  }
+  // 🚀 OPTIMIZED: Sorting and pagination now handled server-side by React Query
+  // Removed sortClients() and paginateClients() functions
 
   // Funkcja zmiany strony
   const handlePageChange = (page: number) => {
@@ -1000,12 +910,66 @@ export function ClientsTable() {
     return sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
   }
 
-  // Załaduj klientów przy pierwszym renderze
+  // 🚀 PERFORMANCE: React Query handles data loading automatically - no manual effects needed!
+  // Legacy loading function replaced by React Query hooks above
+  
+  // 🎯 SYNC: Update legacy state with optimized data for backward compatibility  
+  const stableDataRef = useRef({ 
+    total: 0, 
+    clientsLength: 0, 
+    usersLength: 0, 
+    ownersLength: 0,
+    isReady: false 
+  })
+  
   useEffect(() => {
-    if (user) {
-      loadClientsFromDatabase()
+    if (isOptimizedDataReady && paginatedData) {
+      const newTotal = paginatedData.total || 0
+      const newClientsLength = paginatedData.clients?.length || 0
+      const newUsersLength = cachedUsers.length
+      const newOwnersLength = cachedOwners.length
+      
+      // Only update if data actually changed to prevent infinite loops
+      const hasChanged = 
+        stableDataRef.current.total !== newTotal ||
+        stableDataRef.current.clientsLength !== newClientsLength ||
+        stableDataRef.current.usersLength !== newUsersLength ||
+        stableDataRef.current.ownersLength !== newOwnersLength ||
+        !stableDataRef.current.isReady
+      
+      if (hasChanged) {
+        const newClients = paginatedData.clients || []
+        const totalPagesCalculated = Math.ceil(newTotal / pageSize)
+        
+        setClients(newClients)
+        setAllUsers(cachedUsers)
+        setAvailableOwners(cachedOwners)
+        setLoading(false)
+        setTotalPages(totalPagesCalculated)
+        
+        // Update stable ref
+        stableDataRef.current = {
+          total: newTotal,
+          clientsLength: newClientsLength,
+          usersLength: newUsersLength,
+          ownersLength: newOwnersLength,
+          isReady: true
+        }
+        
+        logger.success('🚀 Data synchronized from React Query cache', {
+          clients: newClientsLength,
+          users: newUsersLength,
+          owners: newOwnersLength,
+          total: newTotal
+        })
+      }
     }
-  }, [user])
+  }, [isOptimizedDataReady, paginatedData, cachedUsers, cachedOwners, pageSize])
+  
+  // 🎯 SYNC: Update loading state
+  useEffect(() => {
+    setLoading(optimizedLoading)
+  }, [optimizedLoading])
 
   // Setup subskrypcji real-time i okresowego odświeżania
   useEffect(() => {
@@ -1029,7 +993,7 @@ export function ClientsTable() {
     }
   }, [])
 
-  // Funkcja do zapisywania zmian klienta
+  // 🚀 OPTIMIZED: Save function using React Query mutations
   const handleSave = async () => {
     if (!editingClient || !user) return
     
@@ -1056,7 +1020,7 @@ export function ClientsTable() {
     }
     // Jeśli reminder nie jest enabled, pozostaje undefined
     
-    setLoading(true)
+    // 🚀 PERFORMANCE: Use optimistic mutation instead of manual loading state
     try {
       // Przygotuj tylko pola z bazy danych (bez UI properties)
       const clientData = {
@@ -1073,14 +1037,15 @@ export function ClientsTable() {
       }
       
       console.log('💾 Zapisywanie zmian klienta...')
-      const updatedClient = await clientsApi.updateClient(editingClient.id, clientData, user)
       
-      // Pokaż sukces natychmiast
-      toast({
-        title: "✅ Sukces",
-        description: `Klient został zaktualizowany i przypisany do Ciebie jako właściciel`,
-        duration: 4000
+      // 🚀 PERFORMANCE: Use React Query mutation with automatic cache updates
+      await updateClientMutation.mutateAsync({
+        clientId: editingClient.id,
+        updates: clientData
       })
+      
+      // 🎯 OPTIMISTIC UPDATE: UI responds immediately
+      optimisticUpdate(editingClient.id, { ...editingClient, ...clientData })
       
       // Zamknij popup natychmiast po zapisaniu
       setIsEditDialogOpen(false)
@@ -1088,10 +1053,9 @@ export function ClientsTable() {
       setClientHistory([])
       setHistoryLoaded(false)
       
-      // Odśwież listę klientów w tle
-      await loadClientsFromDatabase()
-      
-      console.log('✅ Zmiany zapisane pomyślnie')
+      logger.success('✅ Client updated with optimized mutation', { 
+        clientId: editingClient.id 
+      })
       
     } catch (error) {
       console.error('❌ Błąd zapisywania klienta:', error)
@@ -1110,8 +1074,6 @@ export function ClientsTable() {
         variant: "destructive",
         duration: 6000
       })
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -1127,6 +1089,7 @@ export function ClientsTable() {
     setIsAddDialogOpen(true)
   }
 
+  // 🚀 OPTIMIZED: Create client using React Query mutation
   const handleSaveNewClient = async () => {
     if (!user) return
     
@@ -1153,7 +1116,6 @@ export function ClientsTable() {
     }
     // Jeśli reminder nie jest enabled, pozostaje undefined
     
-    setSavingNewClient(true)
     try {
       // Przygotuj dane klienta (bez pól UI)
       const clientData = {
@@ -1172,19 +1134,17 @@ export function ClientsTable() {
         owner_id: user.id
       }
       
-      const savedClient = await clientsApi.createClient(clientData, user)
+      // 🚀 PERFORMANCE: Use React Query mutation with automatic cache invalidation
+      await createClientMutation.mutateAsync(clientData)
       
-      toast({
-        title: "Sukces",
-        description: "Nowy klient został dodany"
-      })
-      
-      // Wyczyść formularz i zamknij dialog
+      // Wyczyść formularz i zamknij dialog - cache update handled automatically by React Query
       setNewClient(emptyClient)
       setIsAddDialogOpen(false)
       
-      // Odśwież listę klientów
-      await loadClientsFromDatabase()
+      // Reset to first page to see new client
+      setCurrentPage(1)
+      
+      logger.success('✅ Client created with optimized mutation')
       
     } catch (error) {
       console.error('❌ Błąd podczas dodawania klienta:', error)
@@ -1199,8 +1159,6 @@ export function ClientsTable() {
         description: errorMessage,
         variant: "destructive"
       })
-    } finally {
-      setSavingNewClient(false)
     }
   }
 
@@ -1209,6 +1167,7 @@ export function ClientsTable() {
     setIsAddDialogOpen(false)
   }
 
+  // 🚀 OPTIMIZED: Delete using React Query mutation with automatic cache cleanup
   const handleDelete = async (clientId: string) => {
     if (!user) return
     
@@ -1217,15 +1176,10 @@ export function ClientsTable() {
     }
     
     try {
-      await clientsApi.deleteClient(clientId, user)
+      // 🚀 PERFORMANCE: React Query handles loading state and cache updates automatically
+      await deleteClientMutation.mutateAsync(clientId)
       
-      toast({
-        title: "Sukces",
-        description: "Klient został usunięty"
-      })
-      
-      // Odśwież listę klientów
-      await loadClientsFromDatabase()
+      logger.success('✅ Client deleted with optimized mutation', { clientId })
       
     } catch (error) {
       console.error('❌ Błąd podczas usuwania klienta:', error)
@@ -1441,9 +1395,9 @@ export function ClientsTable() {
         variant: results.errors.length === 0 ? "default" : "destructive"
       })
       
-      // Odśwież listę klientów jeśli były sukcesy
+      // 🚀 OPTIMIZED: Refetch data using React Query if successful imports
       if (results.success > 0) {
-        await loadClientsFromDatabase()
+        await refetchClients()
       }
       
     } catch (error) {
@@ -1472,6 +1426,34 @@ export function ClientsTable() {
     setOwnerFilter('all')
     setStatusFilter('all')
     setLocationFilter(null)
+  }
+
+  // Funkcja do odświeżania danych tabeli
+  const handleRefreshData = async () => {
+    try {
+      console.log('🔄 Odświeżanie danych tabeli przez użytkownika...')
+      
+      // Użyj React Query refetch aby odświeżyć dane
+      await refetchClients()
+      
+      toast({
+        title: "Odświeżono",
+        description: "Dane tabeli zostały zaktualizowane",
+        duration: 2000
+      })
+      
+      console.log('✅ Dane tabeli zostały odświeżone')
+      
+    } catch (error) {
+      console.error('❌ Błąd odświeżania danych:', error)
+      
+      toast({
+        title: "Błąd",
+        description: "Nie udało się odświeżyć danych",
+        variant: "destructive",
+        duration: 3000
+      })
+    }
   }
 
   // Funkcja do obsługi kliknięcia w telefon w tabeli - TYLKO otwiera popup
@@ -1702,8 +1684,8 @@ export function ClientsTable() {
         duration: 8000
       })
 
-      // Odśwież listę klientów
-      await loadClientsFromDatabase()
+      // 🚀 OPTIMIZED: Refetch data using React Query
+      await refetchClients()
       
       console.log(`✅ Admin zresetował właścicieli dla ${result.success} klientów`)
 
@@ -1830,12 +1812,14 @@ export function ClientsTable() {
             </Button>
           )}
 
+          {/* Przycisk Dodaj Klienta */}
           <Button 
-            onClick={handleAddClient}
-            className="bg-cyan-500 hover:bg-cyan-600"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Dodaj klienta
+                onClick={handleAddClient}
+                className="bg-cyan-500 hover:bg-cyan-600"
+                disabled={createClientMutation.isPending}
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                {createClientMutation.isPending ? 'Dodawanie...' : 'Dodaj klienta'}
           </Button>
         </div>
       </div>
@@ -1853,42 +1837,46 @@ export function ClientsTable() {
             <div>
               <CardTitle className="text-white">Tabela klientów</CardTitle>
               <p className="text-slate-400 text-sm">
-                {filteredClients.length} klientów • 
-                {filteredClients.filter(c => c.status === 'sale').length} w sprzedaży • 
-                {filteredClients.filter(c => c.status === 'canvas').length} w canvass
+                {paginatedData?.total || 0} klientów • 
+                {paginatedData?.clients?.filter(c => c.status === 'sale').length || 0} w sprzedaży • 
+                {paginatedData?.clients?.filter(c => c.status === 'canvas').length || 0} w canvass • 
+                {paginatedData?.clients?.filter(c => c.status === 'nowy').length || 0} nowych
                 {totalPages > 1 && (
                   <span className="text-cyan-400"> • strona {currentPage} z {totalPages}</span>
                 )}
                 {searchQuery || ownerFilter !== 'all' || statusFilter !== 'all' ? (
-                  <span className="text-cyan-400"> • filtrowane z {clients.length} ogółem</span>
+                  <span className="text-cyan-400"> • z filtrami</span>
                 ) : null}
               </p>
             </div>
-            <div className="flex items-center gap-4">
+
+            {/* Przycisk odświeżania w prawym górnym rogu */}
+            <div className="flex items-center gap-2">
               <Button
-                onClick={refreshOwners}
                 variant="outline"
-                className="border-cyan-600 text-cyan-400 hover:bg-cyan-500/20"
-                disabled={loading}
-                title="Odśwież właścicieli klientów"
+                size="sm"
+                onClick={handleRefreshData}
+                disabled={isLoadingClients}
+                className="border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
               >
-                <RefreshCw className="h-4 w-4 mr-2" />
+                <RefreshCw className={`h-4 w-4 mr-2 ${isLoadingClients ? 'animate-spin' : ''}`} />
                 Odśwież
               </Button>
             </div>
+
           </div>
         </CardHeader>
         
         <CardContent>
           {showSkeleton ? (
             <ClientTableSkeleton rows={Math.min(pageSize, 15)} />
-          ) : isProgressiveLoading && paginatedClients.length > 0 ? (
+          ) : isProgressiveLoading && (paginatedData?.clients?.length || 0) > 0 ? (
             <div className="space-y-4">
               <BatchLoadingSkeleton 
                 totalBatches={totalBatches}
                 currentBatch={currentBatch}
                 itemsLoaded={progressiveClients.length}
-                totalItems={paginatedClients.length}
+                totalItems={paginatedData?.clients?.length || 0}
               />
               
               
@@ -2199,13 +2187,13 @@ export function ClientsTable() {
       </Card>
 
       {/* Paginacja */}
-      {filteredClients.length > 0 && (
+      {(paginatedData?.total || 0) > 0 && (
         <div className="bg-slate-800 border-slate-700 rounded-lg border mt-4 p-4">
           <div className="flex items-center justify-between">
             {/* Informacje o stronach */}
             <div className="flex items-center gap-4 text-sm text-slate-400">
               <span>
-                Wyświetlanych {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, filteredClients.length)} z {filteredClients.length} klientów
+                Wyświetlanych {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, paginatedData?.total || 0)} z {paginatedData?.total || 0} klientów
               </span>
               
               {/* Wybór ilości na stronę */}

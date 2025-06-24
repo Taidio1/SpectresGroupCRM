@@ -83,7 +83,8 @@ const statusChartData = Object.entries(dailyStats.statusBreakdown).map(([status,
     status === 'sale' ? '#10b981' :
       status === 'antysale' ? '#f59e0b' :
         status === 'brak kontaktu' ? '#6b7280' :
-          status === 'nie jest zainteresowany' ? '#ef4444' : '#dc2626'
+          status === 'nie jest zainteresowany' ? '#ef4444' :
+            status === 'nowy' ? '#a855f7' : '#dc2626'
 }))
 
 const employeeChartData = Object.entries(dailyStats.employeeStats).map(([employee, count]) => ({
@@ -174,7 +175,8 @@ const statusColors = {
   antysale: 'bg-orange-500/20 text-orange-400',
   brak_kontaktu: 'bg-gray-500/20 text-gray-400',
   nie_zainteresowany: 'bg-red-500/20 text-red-400',
-  zdenerwowany: 'bg-red-600/20 text-red-300'
+  zdenerwowany: 'bg-red-600/20 text-red-300',
+  nowy: 'bg-purple-500/20 text-purple-400'
 }
 
 // Funkcja do kolorowania badge'a prowizji na podstawie stawki
@@ -739,7 +741,8 @@ export function Reports() {
                         status === 'sale' ? '#10b981' :
                           status === 'antysale' ? '#f59e0b' :
                             status === 'brak kontaktu' ? '#6b7280' :
-                              status === 'nie jest zainteresowany' ? '#ef4444' : '#dc2626'
+                              status === 'nie jest zainteresowany' ? '#ef4444' :
+                                status === 'nowy' ? '#a855f7' : '#dc2626'
                     })) : []}
                     cx="50%"
                     cy="50%"
@@ -753,7 +756,8 @@ export function Reports() {
                         status === 'sale' ? '#10b981' :
                           status === 'antysale' ? '#f59e0b' :
                             status === 'brak kontaktu' ? '#6b7280' :
-                              status === 'nie jest zainteresowany' ? '#ef4444' : '#dc2626'
+                              status === 'nie jest zainteresowany' ? '#ef4444' :
+                                status === 'nowy' ? '#a855f7' : '#dc2626'
                       } />
                     )) : null}
                   </Pie>
@@ -768,7 +772,8 @@ export function Reports() {
                       status === 'sale' ? '#10b981' :
                         status === 'antysale' ? '#f59e0b' :
                           status === 'brak kontaktu' ? '#6b7280' :
-                            status === 'nie jest zainteresowany' ? '#ef4444' : '#dc2626'
+                            status === 'nie jest zainteresowany' ? '#ef4444' :
+                              status === 'nowy' ? '#a855f7' : '#dc2626'
                   }}></div>
                   <span className="text-slate-300 truncate">{status}</span>
                   <span className="font-semibold text-white ml-auto">{count as number}</span>

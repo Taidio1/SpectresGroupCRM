@@ -5,6 +5,7 @@ import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { EnhancedAuthProvider } from "@/components/auth/enhanced-auth-provider"
 import { LanguageProvider } from "@/lib/language-context"
+import { QueryProvider } from "@/components/providers/query-provider"
 import { Toaster } from "@/components/ui/toaster"
 
 const inter = Inter({ subsets: ["latin"] })
@@ -23,19 +24,21 @@ export default function RootLayout({
   return (
     <html lang="pl" suppressHydrationWarning>
       <body className={inter.className}>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="dark"
-          enableSystem
-          disableTransitionOnChange
-        >
-          <EnhancedAuthProvider>
-            <LanguageProvider>
-              {children}
-            </LanguageProvider>
-          </EnhancedAuthProvider>
-          <Toaster />
-        </ThemeProvider>
+        <QueryProvider>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="dark"
+            enableSystem
+            disableTransitionOnChange
+          >
+            <EnhancedAuthProvider>
+              <LanguageProvider>
+                {children}
+              </LanguageProvider>
+            </EnhancedAuthProvider>
+            <Toaster />
+          </ThemeProvider>
+        </QueryProvider>
       </body>
     </html>
   )

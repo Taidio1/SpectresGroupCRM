@@ -341,7 +341,7 @@ export interface Client {
   email: string
   notes: string
   website: string
-  status: 'canvas' | 'brak_kontaktu' | 'nie_zainteresowany' | 'zdenerwowany' | 'antysale' | 'sale' | '$$'
+  status: 'canvas' | 'brak_kontaktu' | 'nie_zainteresowany' | 'zdenerwowany' | 'antysale' | 'sale' | '$$' | 'nowy'
   edited_by: string
   edited_at: string
   owner_id?: string // Dodane dla systemu uprawnień
@@ -636,7 +636,7 @@ export const clientsApi = {
             currency,
             timezone
           )
-        `)
+        `, { count: 'exact' })
         .order('updated_at', { ascending: false })
 
       // Dodatkowe filtry
@@ -671,7 +671,7 @@ export const clientsApi = {
         console.log(`📄 Paginacja: strona ${filters.page}, rozmiar ${filters.pageSize}, zakres: ${from}-${to}`)
       }
 
-      console.log('🔄 Wykonuję zapytanie z JOIN...')
+      console.log('🔄 Wykonuję zapytanie z JOIN i liczeniem...')
       const { data: clients, error, count } = await query
       
       if (error) {
@@ -706,8 +706,8 @@ export const clientsApi = {
       }))
       
       // DEBUG: Sprawdź dane właścicieli
-      const clientsWithOwners = transformedClients.filter(client => client.owner)
-      const clientsWithoutOwners = transformedClients.filter(client => !client.owner)
+      const clientsWithOwners = transformedClients.filter((client: Client) => client.owner)
+      const clientsWithoutOwners = transformedClients.filter((client: Client) => !client.owner)
       console.log('✅ Klienci z właścicielami:', clientsWithOwners.length)
       console.log('❌ Klienci bez właścicieli:', clientsWithoutOwners.length)
       

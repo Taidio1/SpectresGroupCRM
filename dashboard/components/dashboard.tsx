@@ -115,6 +115,7 @@ export function Dashboard() {
         { name: "Nie zainteresowany", value: statusCounts.nie_zainteresowany || 0, color: "#ef4444" },
         { name: "Zdenerwowany", value: statusCounts.zdenerwowany || 0, color: "#dc2626" },
         { name: "$$", value: statusCounts['$$'] || 0, color: "#fbbf24" },
+        { name: "Nowy", value: statusCounts.nowy || 0, color: "#a855f7" },
       ].filter(item => item.value > 0) // Pokaż tylko statusy z klientami
       
       setStatusData(updatedStatusData)
@@ -334,6 +335,7 @@ export function Dashboard() {
                                         client.status === 'canvas' ? 'border-cyan-500/30 text-cyan-400' :
                                         client.status === 'sale' ? 'border-green-500/30 text-green-400' :
                                         client.status === 'antysale' ? 'border-orange-500/30 text-orange-400' :
+                                        client.status === 'nowy' ? 'border-purple-500/30 text-purple-400' :
                                         'border-slate-500/30 text-slate-400'
                                       }`}
                                     >
