@@ -86,8 +86,8 @@ export function Dashboard() {
       // Filtruj klientów według uprawnień
       let filteredClients = []
       
-      if (user.role === 'szef' || user.role === 'manager') {
-        // Szef i Manager widzą wszystkich klientów
+      if (user.role === 'szef' || user.role === 'manager' || user.role === 'junior_manager' || user.role === 'project_manager') {
+        // Szef i wszyscy typy managerów widzą wszystkich klientów
         filteredClients = allClients
       } else if (user.role === 'pracownik') {
         // Pracownik widzi tylko swoich klientów i klientów ogólnych

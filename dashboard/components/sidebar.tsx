@@ -34,8 +34,8 @@ const getNavigationItems = (userRole?: string) => {
     baseItems.push({ icon: Award, label: "Moje statystyki", href: "/my-stats" })
   }
 
-  // Raporty - dla manager, szef, admin
-  if (userRole && ['manager', 'szef', 'admin'].includes(userRole)) {
+  // Raporty - dla wszystkich typów managerów, szef, admin
+  if (userRole && ['manager', 'junior_manager', 'project_manager', 'szef', 'admin'].includes(userRole)) {
     baseItems.push(
       { icon: BarChart3, label: "Raporty - Ogólne", href: "/reports/general" },
       { icon: FileText, label: "Raport - Szczegóły", href: "/reports/details" }
@@ -81,6 +81,8 @@ export function Sidebar() {
       case 'admin': return 'bg-red-500/20 text-red-400 border-red-500/30'
       case 'szef': return 'bg-purple-500/20 text-purple-400 border-purple-500/30'
       case 'manager': return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+      case 'project_manager': return 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30'
+      case 'junior_manager': return 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30'
       case 'pracownik': return 'bg-green-500/20 text-green-400 border-green-500/30'
       default: return 'bg-slate-500/20 text-slate-400 border-slate-500/30'
     }
@@ -126,6 +128,8 @@ export function Sidebar() {
               {user.role === 'admin' && 'Administrator'}
               {user.role === 'szef' && 'Szef'}
               {user.role === 'manager' && 'Manager'}
+              {user.role === 'junior_manager' && 'Junior Manager'}
+              {user.role === 'project_manager' && 'Project Manager'}
               {user.role === 'pracownik' && 'Pracownik'}
             </Badge>
           </div>

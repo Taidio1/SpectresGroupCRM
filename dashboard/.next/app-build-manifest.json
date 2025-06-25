@@ -11,21 +11,6 @@
       "static/chunks/main-app.js",
       "static/chunks/app/page.js"
     ],
-    "/clients/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/clients/page.js"
-    ],
-    "/calendar/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/calendar/page.js"
-    ],
-    "/my-stats/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/my-stats/page.js"
-    ],
     "/login/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
@@ -36,20 +21,25 @@
       "static/chunks/main-app.js",
       "static/chunks/app/reports/details/page.js"
     ],
-    "/admin/page": [
+    "/clients/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/admin/page.js"
+      "static/chunks/app/clients/page.js"
     ],
-    "/api/admin/performance-check/route": [
+    "/reports/general/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/api/admin/performance-check/route.js"
+      "static/chunks/app/reports/general/page.js"
     ],
     "/calls/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/calls/page.js"
+    ],
+    "/settings/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/settings/page.js"
     ]
   }
 }

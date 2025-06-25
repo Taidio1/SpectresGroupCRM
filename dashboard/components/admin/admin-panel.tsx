@@ -479,9 +479,16 @@ export function AdminPanel() {
                             userItem.role === 'admin' ? 'destructive' :
                             userItem.role === 'szef' ? 'default' :
                             userItem.role === 'manager' ? 'secondary' :
+                            userItem.role === 'project_manager' ? 'secondary' :
+                            userItem.role === 'junior_manager' ? 'secondary' :
                             'outline'
                           }>
-                            {userItem.role}
+                            {userItem.role === 'admin' && 'Administrator'}
+                            {userItem.role === 'szef' && 'Szef'}
+                            {userItem.role === 'manager' && 'Manager'}
+                            {userItem.role === 'project_manager' && 'Project Manager'}
+                            {userItem.role === 'junior_manager' && 'Junior Manager'}
+                            {userItem.role === 'pracownik' && 'Pracownik'}
                           </Badge>
                         </TableCell>
                         <TableCell>

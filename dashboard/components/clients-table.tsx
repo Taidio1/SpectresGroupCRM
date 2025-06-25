@@ -2927,7 +2927,7 @@ export function ClientsTable() {
           
           <div className="py-6">
             {/* Wybór lokalizacji dla szefa/admina */}
-            {user && (user.role === 'szef' || user.role === 'admin') && availableLocations.length > 1 && (
+            {user && ['szef', 'admin', 'project_manager'].includes(user.role) && availableLocations.length > 1 && (
               <div className="mb-6 p-4 bg-slate-700 rounded-lg border border-slate-600">
                 <h4 className="text-white font-medium mb-3 flex items-center gap-2">
                   <Building2 className="h-4 w-4" />
@@ -2962,7 +2962,7 @@ export function ClientsTable() {
             )}
             
             {/* Informacja o automatycznej lokalizacji dla innych ról */}
-            {user && !['szef', 'admin'].includes(user.role) && selectedImportLocation && (
+            {user && !['szef', 'admin', 'project_manager'].includes(user.role) && selectedImportLocation && (
               <div className="mb-6 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
                 <h4 className="text-blue-400 font-medium mb-2 flex items-center gap-2">
                   <Building2 className="h-4 w-4" />
@@ -3182,12 +3182,12 @@ export function ClientsTable() {
                 !selectedFile || 
                 isUploading || 
                 Boolean(columnAnalysis && columnAnalysis.missing.length > 0) ||
-                Boolean(user && (user.role === 'szef' || user.role === 'admin') && !selectedImportLocation)
+                Boolean(user && ['szef', 'admin', 'project_manager'].includes(user.role) && !selectedImportLocation)
               }
               title={
                 (columnAnalysis && columnAnalysis.missing.length > 0) 
                   ? `Brakuje wymaganych kolumn: ${columnAnalysis.missing.join(', ')}`
-                  : Boolean(user && (user.role === 'szef' || user.role === 'admin') && !selectedImportLocation)
+                  : Boolean(user && ['szef', 'admin', 'project_manager'].includes(user.role) && !selectedImportLocation)
                   ? 'Wybierz lokalizację dla importowanych klientów'
                   : undefined
               }
@@ -3202,7 +3202,7 @@ export function ClientsTable() {
                   <Upload className="h-4 w-4 mr-2" />
                   {(columnAnalysis && columnAnalysis.missing.length > 0) 
                     ? 'Brak wymaganych kolumn' 
-                    : Boolean(user && (user.role === 'szef' || user.role === 'admin') && !selectedImportLocation)
+                    : Boolean(user && ['szef', 'admin', 'project_manager'].includes(user.role) && !selectedImportLocation)
                     ? 'Wybierz lokalizację'
                     : 'Wczytaj CSV'
                   }
