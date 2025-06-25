@@ -188,9 +188,10 @@ export function ClientDetailsPopup({ client, isOpen, onClose, onUpdate }: Client
     }
   }
 
+  
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-2xl max-h-[120vh] overflow-hidden flex flex-col">
         <DialogHeader className="flex flex-row items-center justify-between space-y-0 pb-4 flex-shrink-0">
           <DialogTitle className="text-xl font-semibold text-white flex items-center gap-3">
             <div className="flex items-center gap-3">

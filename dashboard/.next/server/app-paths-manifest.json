@@ -1,7 +1,11 @@
 {
-  "/page": "app/page.js",
+  "/api/admin/performance-check/route": "app/api/admin/performance-check/route.js",
   "/clients/page": "app/clients/page.js",
+  "/login/page": "app/login/page.js",
+  "/my-stats/page": "app/my-stats/page.js",
+  "/calendar/page": "app/calendar/page.js",
   "/reports/details/page": "app/reports/details/page.js",
+  "/admin/page": "app/admin/page.js",
   "/calls/page": "app/calls/page.js",
-  "/reports/general/page": "app/reports/general/page.js"
+  "/page": "app/page.js"
 }

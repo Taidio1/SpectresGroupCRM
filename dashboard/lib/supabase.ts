@@ -433,6 +433,28 @@ export interface User {
   }
 }
 
+// Interface dla powiadomień
+export interface Notification {
+  id: string
+  user_id: string
+  client_id?: string
+  type: 'reminder' | 'antysale_warning' | 'system' | 'manual'
+  title: string
+  message: string
+  read: boolean
+  urgent: boolean
+  metadata: Record<string, any>
+  created_at: string
+  expires_at?: string
+  // Rozszerzone dane z JOIN
+  client?: {
+    id: string
+    first_name: string
+    last_name: string
+    company_name: string
+  }
+}
+
 // Interfejs dla historii zmian z dodatkowymi informacjami
 export interface ClientHistory {
   id: string
@@ -594,12 +616,14 @@ export const clientsApi = {
     pageSize?: number
     search?: string
     location?: string
+    sortBy?: string
+    sortDirection?: 'asc' | 'desc'
   }): Promise<PaginatedClientsResult> {
     try {
       console.log('🔄 Rozpoczynam pobieranie klientów dla użytkownika:', user.id, user.role)
       
       // Użyj JOIN aby pobrać klientów z danymi właścicieli i lokalizacji w jednym zapytaniu
-      // 🚀 OPTYMALIZACJA: Wybierz tylko niezbędne pola + lokalizacja
+      // 🚀 OPTYMALIZACJA: Wybierz tylko niezbędne pola + lokalizacja + reminder
       let query = supabase
         .from('clients')
         .select(`
@@ -613,6 +637,7 @@ export const clientsApi = {
           website,
           status,
           notes,
+          reminder,
           owner_id,
           location_id,
           edited_by,
@@ -637,7 +662,11 @@ export const clientsApi = {
             timezone
           )
         `, { count: 'exact' })
-        .order('updated_at', { ascending: false })
+
+      // 🚀 SORTOWANIE: Obsługa dynamicznego sortowania
+      const sortField = filters?.sortBy || 'updated_at'
+      const isAscending = filters?.sortDirection === 'asc'
+      query = query.order(sortField, { ascending: isAscending })
 
       // Dodatkowe filtry
       if (filters?.date) {
@@ -741,6 +770,8 @@ export const clientsApi = {
     employee?: string 
     search?: string
     location?: string
+    sortBy?: string
+    sortDirection?: 'asc' | 'desc'
   }): Promise<Client[]> {
     try {
       const result = await this.getClientsPaginated(user, filters)
@@ -1215,7 +1246,7 @@ export const clientsApi = {
         },
       ]
 
-      // Przypisz klientów do odpowiednich slotów
+      // Przypisz klientów do odpowiednich slotów na podstawie TYLKO czasu przypomnienia
       const slotsWithClients = timeSlots.map(slot => {
         const slotClients = clientsWithReminders.filter(client => {
           const reminderTime = client.reminder?.time || '00:00'
@@ -1227,15 +1258,16 @@ export const clientsApi = {
           const startMinutes = startHours * 60 + startMins
           const endMinutes = endHours * 60 + endMins
 
-          // Sprawdź czy godzina przypomnienia mieści się w slocie
+          // Sprawdź czy godzina przypomnienia mieści się w slocie czasowym
           const timeInSlot = reminderMinutes >= startMinutes && reminderMinutes <= endMinutes
           
-          // Sprawdź czy status klienta pasuje do typu slotu
-          const statusMatches = slot.statuses.includes(client.status)
-
-          return timeInSlot && statusMatches
+          console.log(`🕐 Klient ${client.first_name} ${client.last_name}: czas ${reminderTime} (${reminderMinutes}min) vs slot ${slot.time} (${startMinutes}-${endMinutes}min) = ${timeInSlot ? 'PASUJE' : 'NIE PASUJE'}`)
+          
+          return timeInSlot
         })
 
+        console.log(`📊 Slot ${slot.time}: ${slotClients.length} klientów`)
+        
         return {
           ...slot,
           clients: slotClients
@@ -2627,10 +2659,29 @@ export const reportsApi = {
         color: statusColors[status] || '#64748b'
       }))
 
-      // 4. Oblicz prowizję (tylko za klientów ze statusem 'sale')
-      const saleClients = statusMap.get('sale') || 0
-      const commissionPerSale = 200 // 200 zł za każdego klienta sale
-      const commissionTotal = saleClients * commissionPerSale
+      // 4. Pobierz prowizję z tabeli employee_stats
+      console.log('💰 Pobieranie prowizji z tabeli employee_stats...')
+      let commissionTotal = 0 // w EUR
+      
+      try {
+        const { data: employeeStats, error: statsError } = await supabase
+          .from('employee_stats')
+          .select('total_commissions')
+          .eq('user_id', user.id)
+          .single()
+
+        if (statsError) {
+          console.warn('⚠️ Nie znaleziono statystyk pracownika, prowizja = 0:', statsError)
+          commissionTotal = 0
+        } else {
+          // total_commissions już jest w EUR - używaj bezpośrednio
+          commissionTotal = employeeStats.total_commissions || 0
+          console.log(`💰 Prowizja pobrana z bazy: ${commissionTotal} EUR`)
+        }
+      } catch (error) {
+        console.error('❌ Błąd pobierania prowizji z employee_stats:', error)
+        commissionTotal = 0
+      }
 
       // 5. Pobierz godziny pracy z tego miesiąca na podstawie activity_logs
       console.log('⏰ Pobieranie aktywności z tego miesiąca...')
@@ -2745,18 +2796,30 @@ export const reportsApi = {
         throw new Error('Dostęp tylko dla pracowników')
       }
 
-      // Sprawdź czy to dzień roboczy (pon-pt) - bezpieczne parsowanie daty
+      // ENHANCED DEBUG: Sprawdź czy to dzień roboczy (pon-pt) - bezpieczne parsowanie daty
+      console.log(`🔍 DEBUG: Input date string: "${date}"`)
       const dateParts = date.split('-') // "2025-06-02" -> ["2025", "06", "02"]
+      console.log(`🔍 DEBUG: Date parts:`, dateParts)
+      
       const year = parseInt(dateParts[0])
       const month = parseInt(dateParts[1]) - 1 // -1 bo JavaScript używa 0-11 dla miesięcy
       const day = parseInt(dateParts[2])
-      const dayOfWeek = new Date(year, month, day).getDay()
       
-      console.log(`🗓️ Sprawdzanie dnia roboczego: ${date} => dayOfWeek=${dayOfWeek} (${['nie', 'pon', 'wt', 'śr', 'czw', 'pt', 'sob'][dayOfWeek]})`)
+      console.log(`🔍 DEBUG: Parsed components: year=${year}, month=${month} (JS format), day=${day}`)
+      
+      const dateObj = new Date(year, month, day)
+      const dayOfWeek = dateObj.getDay()
+      
+      console.log(`🔍 DEBUG: Created Date object: ${dateObj.toISOString()}`)
+      console.log(`🔍 DEBUG: Date in local format: ${dateObj.toLocaleDateString('pl-PL', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`)
+      console.log(`🗓️ Sprawdzanie dnia roboczego: ${date} => dayOfWeek=${dayOfWeek} (${['niedziela', 'poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota'][dayOfWeek]})`)
       
       if (dayOfWeek === 0 || dayOfWeek === 6) { // 0 = niedziela, 6 = sobota
+        console.error(`❌ BŁĄD: Próba zapisania godzin dla weekendu! Dzień tygodnia: ${dayOfWeek} (${['niedziela', 'poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota'][dayOfWeek]})`)
         throw new Error('Można wpisywać godziny tylko dla dni roboczych (pon-pt)')
       }
+
+      console.log(`✅ Dzień roboczy potwierdzony: ${['niedziela', 'poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota'][dayOfWeek]}`)
 
       // Walidacja godzin (0-12)
       if (hours < 0 || hours > 12) {
@@ -3921,5 +3984,290 @@ export const callsApi = {
         topCallers: []
       }
     }
+  }
+}
+
+// 📡 NOTIFICATIONS API - System powiadomień
+export const notificationsApi = {
+  // Pobierz powiadomienia dla użytkownika
+  async getNotifications(user: User, options?: {
+    unreadOnly?: boolean
+    limit?: number
+    type?: Notification['type']
+  }): Promise<Notification[]> {
+    try {
+      let query = supabase
+        .from('notifications')
+        .select(`
+          id,
+          user_id,
+          client_id,
+          type,
+          title,
+          message,
+          read,
+          urgent,
+          metadata,
+          created_at,
+          expires_at,
+          client:clients (
+            id,
+            first_name,
+            last_name,
+            company_name
+          )
+        `)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+
+      // Filtruj tylko nieprzeczytane
+      if (options?.unreadOnly) {
+        query = query.eq('read', false)
+      }
+
+      // Filtruj po typie
+      if (options?.type) {
+        query = query.eq('type', options.type)
+      }
+
+      // Limit
+      if (options?.limit) {
+        query = query.limit(options.limit)
+      }
+
+      const { data, error } = await query
+
+      if (error) {
+        console.error('❌ Błąd pobierania powiadomień:', error)
+        throw error
+      }
+
+      return (data || []).map(notification => ({
+        ...notification,
+        // Przekształć dane klienta z JOIN
+        client: notification.client && Array.isArray(notification.client) && notification.client.length > 0
+          ? notification.client[0]
+          : notification.client && !Array.isArray(notification.client)
+          ? notification.client
+          : undefined
+      })) as Notification[]
+
+    } catch (error) {
+      console.error('❌ Błąd w getNotifications:', error)
+      throw error
+    }
+  },
+
+  // Pobierz liczbę nieprzeczytanych powiadomień
+  async getUnreadCount(user: User): Promise<number> {
+    try {
+      const { count, error } = await supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('read', false)
+
+      if (error) {
+        console.error('❌ Błąd pobierania liczby nieprzeczytanych:', error)
+        throw error
+      }
+
+      return count || 0
+    } catch (error) {
+      console.error('❌ Błąd w getUnreadCount:', error)
+      return 0
+    }
+  },
+
+  // Oznacz powiadomienie jako przeczytane
+  async markAsRead(notificationId: string): Promise<void> {
+    try {
+      const { error } = await supabase.rpc('mark_notification_as_read', {
+        notification_id: notificationId
+      })
+
+      if (error) {
+        console.error('❌ Błąd oznaczania jako przeczytane:', error)
+        throw error
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd w markAsRead:', error)
+      throw error
+    }
+  },
+
+  // Oznacz wszystkie powiadomienia jako przeczytane
+  async markAllAsRead(user: User): Promise<number> {
+    try {
+      const { data, error } = await supabase.rpc('mark_all_notifications_as_read')
+
+      if (error) {
+        console.error('❌ Błąd oznaczania wszystkich jako przeczytane:', error)
+        throw error
+      }
+
+      return data || 0
+    } catch (error) {
+      console.error('❌ Błąd w markAllAsRead:', error)
+      throw error
+    }
+  },
+
+  // Utwórz nowe powiadomienie
+  async createNotification(notification: Omit<Notification, 'id' | 'created_at'>): Promise<Notification> {
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .insert([notification])
+        .select()
+        .single()
+
+      if (error) {
+        console.error('❌ Błąd tworzenia powiadomienia:', error)
+        throw error
+      }
+
+      return data as Notification
+    } catch (error) {
+      console.error('❌ Błąd w createNotification:', error)
+      throw error
+    }
+  },
+
+  // Usuń powiadomienie
+  async deleteNotification(notificationId: string): Promise<void> {
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('id', notificationId)
+
+      if (error) {
+        console.error('❌ Błąd usuwania powiadomienia:', error)
+        throw error
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd w deleteNotification:', error)
+      throw error
+    }
+  },
+
+  // Wyczyść stare powiadomienia
+  async cleanupOldNotifications(): Promise<void> {
+    try {
+      const { error } = await supabase.rpc('cleanup_old_notifications')
+
+      if (error) {
+        console.error('❌ Błąd czyszczenia starych powiadomień:', error)
+        throw error
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd w cleanupOldNotifications:', error)
+      throw error
+    }
+  },
+
+  // Pobierz dzisiejsze przypomnienia dla dashboard
+  async getTodayReminders(user: User): Promise<Notification[]> {
+    try {
+      const today = new Date().toISOString().split('T')[0]
+
+      const { data, error } = await supabase
+        .from('notifications')
+        .select(`
+          id,
+          user_id,
+          client_id,
+          type,
+          title,
+          message,
+          read,
+          urgent,
+          metadata,
+          created_at,
+          expires_at,
+          client:clients (
+            id,
+            first_name,
+            last_name,
+            company_name
+          )
+        `)
+        .eq('user_id', user.id)
+        .eq('type', 'reminder')
+        .gte('created_at', `${today}T00:00:00.000Z`)
+        .lt('created_at', `${today}T23:59:59.999Z`)
+        .order('created_at', { ascending: true })
+
+      if (error) {
+        console.error('❌ Błąd pobierania dzisiejszych przypomnień:', error)
+        throw error
+      }
+
+      return (data || []).map(notification => ({
+        ...notification,
+        client: notification.client && Array.isArray(notification.client) && notification.client.length > 0
+          ? notification.client[0]
+          : notification.client && !Array.isArray(notification.client)
+          ? notification.client
+          : undefined
+      })) as Notification[]
+
+    } catch (error) {
+      console.error('❌ Błąd w getTodayReminders:', error)
+      return []
+    }
+  },
+
+  // Uruchom funkcje generowania powiadomień (do testowania)
+  async triggerReminderCheck(): Promise<void> {
+    try {
+      const { error } = await supabase.rpc('create_reminder_notifications')
+
+      if (error) {
+        console.error('❌ Błąd uruchamiania sprawdzania przypomnień:', error)
+        throw error
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd w triggerReminderCheck:', error)
+      throw error
+    }
+  },
+
+  async triggerAntisaleCheck(): Promise<void> {
+    try {
+      const { error } = await supabase.rpc('create_antysale_warnings')
+
+      if (error) {
+        console.error('❌ Błąd uruchamiania sprawdzania antysale:', error)
+        throw error
+      }
+
+    } catch (error) {
+      console.error('❌ Błąd w triggerAntisaleCheck:', error)
+      throw error
+    }
+  },
+
+  // Subskrypcja na real-time powiadomienia
+  subscribeToNotifications(userId: string, callback: (notification: Notification) => void) {
+    return supabase
+      .channel(`notifications_${userId}`)
+      .on('postgres_changes', 
+        { 
+          event: 'INSERT', 
+          schema: 'public', 
+          table: 'notifications',
+          filter: `user_id=eq.${userId}`
+        }, 
+        (payload) => {
+          callback(payload.new as Notification)
+        }
+      )
+      .subscribe()
   }
 }

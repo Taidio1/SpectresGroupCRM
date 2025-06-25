@@ -35,19 +35,23 @@ export function useClients(filters?: {
 export function useClientsPaginated(
   page: number = 1,
   limit: number = 25,
-  filters?: Record<string, any>
+  filters?: Record<string, any>,
+  sortBy?: string,
+  sortDirection?: 'asc' | 'desc'
 ) {
   const { user } = useAuth()
   
   return useQuery({
-    queryKey: queryKeys.clients.paginated(page, limit, filters),
+    queryKey: queryKeys.clients.paginated(page, limit, { ...filters, sortBy, sortDirection }),
     queryFn: async () => {
       if (!user) throw new Error('User not authenticated')
-      logger.loading(`📊 Fetching clients page ${page}`, { page, limit, filters })
+      logger.loading(`📊 Fetching clients page ${page}`, { page, limit, filters, sortBy, sortDirection })
       const result = await clientsApi.getClientsPaginated(user, { 
         ...filters, 
         page, 
-        pageSize: limit 
+        pageSize: limit,
+        sortBy,
+        sortDirection
       })
       logger.success(`✅ Clients page ${page} loaded`, { 
         count: result.clients.length, 

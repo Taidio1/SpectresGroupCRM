@@ -137,11 +137,15 @@ export function MyStatsPage() {
       
       // Tylko dni robocze (pon-pt) - 1=pon, 2=wt, 3=śr, 4=czw, 5=pt
       if (dayOfWeek >= 1 && dayOfWeek <= 5) {
-        const dateString = date.toISOString().split('T')[0]
+        // NAPRAWKA: Bezpieczne formatowanie daty bez problemów ze strefą czasową
+        const dateString = `${year}-${(month + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`
+        
         // Generuj poprawną nazwę dnia tygodnia
         const dayName = date.toLocaleDateString('pl-PL', { weekday: 'short' })
         // Formatuj datę bezpiecznie
         const formattedDate = `${day.toString().padStart(2, '0')}.06.2025`
+        
+        console.log(`✅ DEBUG Frontend: Generuję dzień roboczy ${dayName} (${dayOfWeek}) -> ${dateString}`)
         
         workingDays.push({
           date: dateString,
@@ -301,8 +305,8 @@ export function MyStatsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-slate-400">Prowizja</p>
-                <p className="text-3xl font-bold text-yellow-400">{stats.commissionTotal} zł</p>
-                <p className="text-xs text-slate-500 mt-1">Za klientów Sale</p>
+                <p className="text-3xl font-bold text-yellow-400">{stats.commissionTotal} €</p>
+                <p className="text-xs text-slate-500 mt-1">Z tabeli employee_stats</p>
               </div>
               <div className="text-yellow-400">
                 <Euro className="h-8 w-8" />

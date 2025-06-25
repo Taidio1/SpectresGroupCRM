@@ -321,7 +321,7 @@ export function ClientsTable() {
     isLoading: isLoadingClients, 
     error: clientsError,
     refetch: refetchClients 
-  } = useClientsPaginated(currentPage, pageSize, filters)
+  } = useClientsPaginated(currentPage, pageSize, filters, sortField, sortDirection)
   
   // 🚀 SHARED CACHE: Users loaded once and shared across all components
   const { 
@@ -1416,8 +1416,20 @@ export function ClientsTable() {
   // Funkcja do formatowania daty przypomnienia
   const formatReminderDate = (reminder: any) => {
     if (!reminder || !reminder.enabled || !reminder.date) return null
-    const date = new Date(reminder.date + 'T' + reminder.time)
-    return date.toLocaleDateString('pl-PL') + ' ' + reminder.time
+    
+    const time = reminder.time || '09:00'
+    const dateStr = reminder.date
+    
+    try {
+      const date = new Date(dateStr + 'T' + time)
+      if (isNaN(date.getTime())) {
+        return `${dateStr} ${time}`
+      }
+      return date.toLocaleDateString('pl-PL') + ' ' + time
+    } catch (error) {
+      console.error('❌ Błąd formatowania daty przypomnienia:', error)
+      return `${dateStr} ${time}`
+    }
   }
 
   // Funkcja do resetowania filtrów
@@ -1888,11 +1900,11 @@ export function ClientsTable() {
                   <TableRow className="border-slate-700">
                     <TableHead className="text-slate-400">
                       <button
-                        onClick={() => handleSort('name')}
+                        onClick={() => handleSort('first_name')}
                         className="flex items-center gap-2 hover:text-white transition-colors"
                       >
                         {t('clients.firstName')} / {t('clients.lastName')}
-                        {getSortIcon('name')}
+                        {getSortIcon('first_name')}
                       </button>
                     </TableHead>
                     <TableHead className="text-slate-400">
@@ -1916,11 +1928,11 @@ export function ClientsTable() {
                     </TableHead>
                     <TableHead className="text-slate-400">
                       <button
-                        onClick={() => handleSort('owner')}
+                        onClick={() => handleSort('owner_id')}
                         className="flex items-center gap-2 hover:text-white transition-colors"
                       >
                         Właściciel
-                        {getSortIcon('owner')}
+                        {getSortIcon('owner_id')}
                       </button>
                     </TableHead>
 
