@@ -1800,7 +1800,7 @@ export function ClientsTable() {
           )}
           
           {/* Przycisk "Wgraj plik" tylko dla manager, szef i admin */}
-          {user?.role && ['manager', 'szef', 'admin'].includes(user.role) && (
+                          {user?.role && ['manager', 'project_manager', 'szef', 'admin'].includes(user.role) && (
             <Button 
               onClick={handleUploadFiles}
               variant="outline" 

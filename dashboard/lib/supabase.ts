@@ -431,6 +431,9 @@ export interface User {
     email: string
     avatar_url?: string
   }
+  // 🆕 Informacje o podwładnych (dla menedżerów)
+  subordinates?: User[]
+  totalSubordinates?: number
 }
 
 // Interface dla powiadomień
@@ -3329,6 +3332,291 @@ export const authApi = {
     
     if (error) throw error
     return data as User
+  },
+
+  // Zaktualizuj profil użytkownika (w tym rolę)
+  async updateUser(userId: string, updates: Partial<User>, currentUser: User): Promise<User> {
+    console.log('👥 updateUser START - aktualizacja użytkownika:', userId, updates)
+
+    // Sprawdź uprawnienia
+    if (!permissionsApi.canChangeRoles(currentUser)) {
+      throw new Error('Brak uprawnień do edycji użytkowników')
+    }
+
+    // Dodatkowa weryfikacja dla zmian ról
+    if (updates.role) {
+      const { data: targetUser, error: fetchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .single()
+
+      if (fetchError) throw fetchError
+
+      // Sprawdź czy użytkownik może zmieniać rolę docelowego użytkownika
+      if (!permissionsApi.canManageUser(currentUser, targetUser as User)) {
+        throw new Error('Brak uprawnień do zmiany roli tego użytkownika')
+      }
+
+      console.log(`🔄 Zmiana roli: ${targetUser.role} → ${updates.role}`)
+    }
+
+    // Wykonaj aktualizację
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', userId)
+      .select()
+      .single()
+
+    if (error) {
+      console.error('❌ Błąd aktualizacji użytkownika:', error)
+      throw error
+    }
+
+    console.log('✅ Użytkownik zaktualizowany pomyślnie:', data.full_name)
+    return data as User
+  },
+
+  // Promuj junior_manager do project_manager (dedykowana funkcja)
+  async promoteToProjectManager(userId: string, currentUser: User): Promise<User> {
+    console.log('🚀 promoteToProjectManager START - promowanie do PM:', userId)
+
+    // Sprawdź czy aktualny użytkownik ma uprawnienia (tylko Szef i Admin)
+    if (!['szef', 'admin'].includes(currentUser.role)) {
+      throw new Error('Tylko Szef i Administrator mogą promować użytkowników do roli Project Manager')
+    }
+
+    // Pobierz docelowego użytkownika
+    const { data: targetUser, error: fetchError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .single()
+
+    if (fetchError) throw fetchError
+
+    // Sprawdź czy ma rolę junior_manager
+    if (targetUser.role !== 'junior_manager') {
+      throw new Error('Można promować tylko użytkowników z rolą Junior Manager')
+    }
+
+    console.log(`🔄 Promowanie: ${targetUser.full_name} (${targetUser.role} → project_manager)`)
+
+    // Wykonaj promocję
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        role: 'project_manager',
+        role_hierarchy_level: 1, // Project Manager ma poziom 1
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', userId)
+      .select()
+      .single()
+
+    if (error) {
+      console.error('❌ Błąd promowania użytkownika:', error)
+      throw error
+    }
+
+    console.log(`✅ ${targetUser.full_name} został promowany do Project Manager`)
+    return data as User
+  },
+
+  // Przypisz junior_manager (wraz z podwładnymi) do project_manager - UPROSZCZONA WERSJA
+  async assignJuniorManagerToProjectManager(juniorManagerId: string, projectManagerId: string, currentUser: User): Promise<{ 
+    juniorManager: User, 
+    affectedEmployees: User[], 
+    message: string 
+  }> {
+    console.log('🔗 assignJuniorManagerToProjectManager START (uproszczona wersja):', { juniorManagerId, projectManagerId })
+
+    // Sprawdź uprawnienia - tylko Szef i Admin mogą zarządzać hierarchią
+    if (!['szef', 'admin'].includes(currentUser.role)) {
+      console.error('❌ Brak uprawnień - użytkownik:', currentUser.email, 'rola:', currentUser.role)
+      throw new Error('Tylko Szef i Administrator mogą zarządzać hierarchię managerów')
+    }
+
+    try {
+      // Krok 1: Sprawdź czy Junior Manager istnieje
+      const { data: juniorManager, error: juniorError } = await supabase
+        .from('users')
+        .select('id, full_name, role, manager_id')
+        .eq('id', juniorManagerId)
+        .eq('role', 'junior_manager')
+        .single()
+
+      if (juniorError || !juniorManager) {
+        throw new Error('Nie znaleziono Junior Manager o podanym ID')
+      }
+
+      // Krok 2: Sprawdź czy Project Manager istnieje
+      const { data: projectManager, error: projectError } = await supabase
+        .from('users')
+        .select('id, full_name, role')
+        .eq('id', projectManagerId)
+        .eq('role', 'project_manager')
+        .single()
+
+      if (projectError || !projectManager) {
+        throw new Error('Nie znaleziono Project Manager o podanym ID')
+      }
+
+      console.log(`🔗 Przypisuję ${juniorManager.full_name} do ${projectManager.full_name}`)
+
+      // Krok 3: Znajdź pracowników Junior Managera (bez używania funkcji hierarchicznych)
+      const { data: employees, error: employeesError } = await supabase
+        .from('users')
+        .select('id, full_name, role, manager_id')
+        .eq('manager_id', juniorManagerId)
+        .eq('role', 'pracownik')
+
+      if (employeesError) {
+        console.error('❌ Błąd pobierania pracowników:', employeesError)
+        // Kontynuuj mimo błędu - może nie ma pracowników
+      }
+
+      const employeesList = employees || []
+      console.log(`👥 Znaleziono ${employeesList.length} pracowników pod ${juniorManager.full_name}`)
+
+      // Krok 4: Aktualizuj Junior Manager - PROSTA AKTUALIZACJA
+      console.log('🔄 Aktualizuję manager_id dla junior managera')
+      const { data: updatedJuniorManager, error: updateError } = await supabase
+        .from('users')
+        .update({ 
+          manager_id: projectManagerId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', juniorManagerId)
+        .select('id, full_name, role, manager_id')
+        .single()
+
+      if (updateError) {
+        console.error('❌ Błąd aktualizacji junior managera:', updateError)
+        throw new Error(`Błąd aktualizacji: ${updateError.message}`)
+      }
+
+      // Krok 5: Przenieś pracowników (jeśli istnieją)
+      let updatedEmployees: User[] = []
+      if (employeesList.length > 0) {
+        console.log('🔄 Przenoszę pracowników pod Project Manager')
+        
+        for (const employee of employeesList) {
+          const { data: updatedEmployee, error: moveError } = await supabase
+            .from('users')
+            .update({ 
+              manager_id: projectManagerId,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', employee.id)
+            .select('id, full_name, role, manager_id')
+            .single()
+
+          if (moveError) {
+            console.error(`❌ Błąd przenoszenia pracownika ${employee.full_name}:`, moveError)
+          } else if (updatedEmployee) {
+            updatedEmployees.push(updatedEmployee as User)
+          }
+        }
+
+        console.log(`📦 Przeniesiono ${updatedEmployees.length}/${employeesList.length} pracowników`)
+      }
+
+      const message = `Junior Manager ${juniorManager.full_name} został przypisany do Project Manager ${projectManager.full_name}. ${updatedEmployees.length > 0 ? `Przeniesiono również ${updatedEmployees.length} pracowników.` : ''}`
+
+      console.log(`✅ SUKCES: ${message}`)
+
+      return {
+        juniorManager: updatedJuniorManager as User,
+        affectedEmployees: updatedEmployees,
+        message
+      }
+
+    } catch (error) {
+      console.error('❌ BŁĄD w assignJuniorManagerToProjectManager:', error)
+      throw error
+    }
+  },
+
+  // Pobierz hierarchię managerów z podwładnymi
+  async getManagerHierarchy(managerId: string): Promise<{
+    manager: User,
+    directReports: User[],
+    allSubordinates: User[]
+  }> {
+    console.log('🏗️ getManagerHierarchy START:', managerId)
+
+    // Pobierz managera
+    const { data: manager, error: managerError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', managerId)
+      .single()
+
+    if (managerError) throw managerError
+
+    // Pobierz bezpośrednich podwładnych
+    const { data: directReports, error: directError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('manager_id', managerId)
+
+    if (directError) throw directError
+
+    // Pobierz wszystkich podwładnych (recursive dla junior managerów)
+    let allSubordinates: User[] = [...(directReports || [])]
+
+    for (const subordinate of directReports || []) {
+      if (subordinate.role === 'junior_manager') {
+        const { data: subEmployees, error: subError } = await supabase
+          .from('users')
+          .select('*')
+          .eq('manager_id', subordinate.id)
+
+        if (!subError && subEmployees) {
+          allSubordinates.push(...subEmployees)
+        }
+      }
+    }
+
+    console.log(`📊 Manager ${manager.full_name}: ${directReports?.length || 0} bezpośrednich, ${allSubordinates.length} łącznie`)
+
+    return {
+      manager: manager as User,
+      directReports: (directReports || []) as User[],
+      allSubordinates: allSubordinates as User[]
+    }
+  },
+
+  // Pobierz wszystkich dostępnych project managerów
+  async getAvailableProjectManagers(): Promise<User[]> {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('role', 'project_manager')
+      .eq('is_active', true)
+      .order('full_name')
+
+    if (error) throw error
+    return (data || []) as User[]
+  },
+
+  // Pobierz wszystkich junior managerów bez przypisanego project managera
+  async getUnassignedJuniorManagers(): Promise<User[]> {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('role', 'junior_manager')
+      .is('manager_id', null)
+      .eq('is_active', true)
+      .order('full_name')
+
+    if (error) throw error
+    return (data || []) as User[]
   },
 
   // Bezpieczne pobieranie użytkowników do wyświetlania (odporne na RLS)

@@ -34,11 +34,13 @@ import {
   Archive,
   Zap,
   FileText,
-  Download
+  Download,
+  ArrowUp
 } from "lucide-react"
 import { reportsApi, authApi, User, EmployeeStats, clientsApi } from "@/lib/supabase"
 import { PerformanceDashboard } from "./performance-dashboard"
 import { UserEditDialog } from "./user-edit-dialog"
+import { ManagerHierarchyPanel } from "./manager-hierarchy-panel"
 
 interface SystemStats {
   totalUsers: number
@@ -68,6 +70,7 @@ export function AdminPanel() {
 
   // Sprawdź uprawnienia
   const hasAdminAccess = user?.role === 'admin' || user?.role === 'szef'
+  const canPromoteUsers = user?.role === 'admin' || user?.role === 'szef'
 
   // Funkcja ładowania statystyk systemu
   const loadSystemStats = async () => {
@@ -314,7 +317,7 @@ export function AdminPanel() {
 
         {/* Main Content - Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5 bg-slate-800 border-slate-700">
+          <TabsList className="grid w-full grid-cols-6 bg-slate-800 border-slate-700">
             <TabsTrigger value="overview" className="data-[state=active]:bg-slate-700">
               <BarChart3 className="h-4 w-4 mr-2" />
               Przegląd
@@ -322,6 +325,10 @@ export function AdminPanel() {
             <TabsTrigger value="users" className="data-[state=active]:bg-slate-700">
               <Users className="h-4 w-4 mr-2" />
               Użytkownicy
+            </TabsTrigger>
+            <TabsTrigger value="hierarchy" className="data-[state=active]:bg-slate-700">
+              <ArrowUp className="h-4 w-4 mr-2" />
+              Hierarchia
             </TabsTrigger>
             <TabsTrigger value="database" className="data-[state=active]:bg-slate-700">
               <Database className="h-4 w-4 mr-2" />
@@ -471,7 +478,15 @@ export function AdminPanel() {
                               {userItem.full_name.split(' ').map(n => n[0]).join('').toUpperCase()}
                             </AvatarFallback>
                           </Avatar>
-                          <span className="text-white">{userItem.full_name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-white">{userItem.full_name}</span>
+                            {canPromoteUsers && userItem.role === 'junior_manager' && (
+                              <div className="flex items-center gap-1 px-2 py-1 bg-amber-500/10 border border-amber-500/20 rounded-md">
+                                <ArrowUp className="h-3 w-3 text-amber-400" />
+                                <span className="text-xs text-amber-400">Możliwość promocji</span>
+                              </div>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="text-slate-400">{userItem.email}</TableCell>
                         <TableCell>
@@ -513,6 +528,11 @@ export function AdminPanel() {
                 </Table>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Hierarchy Tab */}
+          <TabsContent value="hierarchy" className="space-y-6">
+            <ManagerHierarchyPanel onHierarchyUpdated={loadSystemStats} />
           </TabsContent>
 
           {/* Database Tab */}

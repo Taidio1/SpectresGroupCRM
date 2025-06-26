@@ -75,7 +75,7 @@ function CalendarContent() {
   const [refreshing, setRefreshing] = useState(false)
   
   // Sprawdź czy użytkownik może filtrować po pracownikach
-  const canFilterByEmployee = user && ['manager', 'szef', 'admin'].includes(user.role)
+  const canFilterByEmployee = user && ['manager', 'project_manager', 'szef', 'admin'].includes(user.role)
 
   // Formatowanie daty dla API
   const formatDateForAPI = (date: Date): string => {

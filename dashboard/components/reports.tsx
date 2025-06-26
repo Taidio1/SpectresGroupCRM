@@ -48,6 +48,7 @@ import { useAuth } from "@/store/useStore"
 import { reportsApi, type EmployeeStats, type EmployeeActivityStats } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
 import { logger } from "@/lib/logger"
+import { usePermissions } from "@/hooks/usePermissions"
 
 // Dane do raportów
 const dailyStats = {
@@ -219,10 +220,11 @@ export function Reports() {
   const [phoneStats, setPhoneStats] = useState<{ totalPhoneCalls: number, totalPhoneCallsToday: number }>({ totalPhoneCalls: 0, totalPhoneCallsToday: 0 })
   const { user } = useAuth()
   const { toast } = useToast()
+  const permissions = usePermissions()
   const today = new Date().toLocaleDateString('pl-PL')
 
   // Sprawdź czy użytkownik ma uprawnienia do statystyk pracowników
-  const hasManagerAccess = user?.role && ['manager', 'szef', 'admin'].includes(user.role)
+  const hasManagerAccess = permissions.canViewEmployeeStats
 
   // Ładowanie danych z bazy danych
   const loadEmployeeStats = async () => {

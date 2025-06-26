@@ -1,7 +1,4 @@
 {
-  "/page": "app/page.js",
-  "/clients/page": "app/clients/page.js",
-  "/login/page": "app/login/page.js",
-  "/calls/page": "app/calls/page.js",
-  "/settings/page": "app/settings/page.js"
+  "/api/admin/performance-check/route": "app/api/admin/performance-check/route.js",
+  "/admin/page": "app/admin/page.js"
 }

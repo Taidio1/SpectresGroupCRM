@@ -15,6 +15,11 @@ export interface Permissions {
   canViewLocationCalls: boolean
   canViewOwnCalls: boolean
   
+  // Uprawnienia dla raportów i statystyk
+  canViewReports: boolean
+  canSeeStatistics: boolean
+  canViewEmployeeStats: boolean
+  
   // Informacje o roli
   role: User['role']
   isManager: boolean
@@ -47,6 +52,9 @@ export function usePermissions(): Permissions {
         canViewAllCalls: false,
         canViewLocationCalls: false,
         canViewOwnCalls: false,
+        canViewReports: false,
+        canSeeStatistics: false,
+        canViewEmployeeStats: false,
         role: 'pracownik',
         isManager: false,
         isEmployee: true,
@@ -70,6 +78,9 @@ export function usePermissions(): Permissions {
         canViewAllCalls: true,
         canViewLocationCalls: true,
         canViewOwnCalls: true,
+        canViewReports: true,
+        canSeeStatistics: true,
+        canViewEmployeeStats: true,
         role,
         isManager: false,
         isEmployee: false,
@@ -88,6 +99,9 @@ export function usePermissions(): Permissions {
         canViewAllCalls: false,
         canViewLocationCalls: true, // Widzą połączenia w swojej lokalizacji
         canViewOwnCalls: true,
+        canViewReports: true, // Wszyscy managerowie widzą raporty
+        canSeeStatistics: true, // Wszyscy managerowie widzą statystyki
+        canViewEmployeeStats: true, // Wszyscy managerowie widzą statystyki pracowników
         role,
         isManager: true,
         isEmployee: false,
@@ -105,6 +119,9 @@ export function usePermissions(): Permissions {
       canViewAllCalls: false,
       canViewLocationCalls: false,
       canViewOwnCalls: true, // Tylko swoje połączenia
+      canViewReports: false, // Pracownik nie ma dostępu do raportów
+      canSeeStatistics: false, // Pracownik nie ma dostępu do statystyk
+      canViewEmployeeStats: false, // Pracownik nie widzi statystyk innych
       role,
       isManager: false,
       isEmployee: true,
